@@ -21,6 +21,7 @@
 - [System Overview](./architecture/overview.md) _(coming soon)_
 - [Data Flow](./architecture/data-flow.md) _(coming soon)_
 - [Security Model](./architecture/security.md) _(coming soon)_
+- [Mission Control Foundation](./architecture/mission-control-foundation.md)
 
 ### Development
 

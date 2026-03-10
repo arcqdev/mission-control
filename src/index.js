@@ -85,11 +85,13 @@ const { getLlmUsage, getRoutingStats, startLlmUsageRefresh } = require("./llm-us
 const { executeAction } = require("./actions");
 const { migrateDataDir } = require("./data");
 const { createStateModule } = require("./state");
+const { initializeMissionControl } = require("./mission-control");
 
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
 const PORT = CONFIG.server.port;
+const HOST = CONFIG.server.host;
 const DASHBOARD_DIR = path.join(__dirname, "../public");
 const PATHS = CONFIG.paths;
 
@@ -104,6 +106,12 @@ const AUTH_CONFIG = {
 // Profile-aware data directory
 const DATA_DIR = path.join(getOpenClawDir(), "command-center", "data");
 const LEGACY_DATA_DIR = path.join(DASHBOARD_DIR, "data");
+
+initializeMissionControl({
+  dataDir: DATA_DIR,
+  config: CONFIG,
+  logger: console,
+});
 
 // ============================================================================
 // SSE (Server-Sent Events)
@@ -627,9 +635,9 @@ const server = http.createServer((req, res) => {
 // ============================================================================
 // START SERVER
 // ============================================================================
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const profile = process.env.OPENCLAW_PROFILE;
-  console.log(`\u{1F99E} OpenClaw Command Center running at http://localhost:${PORT}`);
+  console.log(`\u{1F99E} OpenClaw Command Center running at http://${HOST}:${PORT}`);
   if (profile) {
     console.log(`   Profile: ${profile} (~/.openclaw-${profile})`);
   }
