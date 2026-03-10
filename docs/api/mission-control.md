@@ -17,7 +17,7 @@ Response shape:
 - `version` — response schema version
 - `generatedAt` — response generation time
 - `updatedAt` — last Mission Control snapshot update time
-- `masterCards` — normalized card records
+- `masterCards` — normalized card records, including `dispatchOwner`, linked Linear issue metadata, and derived cross-lane dependencies
 - `stats` — board counts (`totalCards`, `eventCount`, `projectCount`, `teamCount`, `stateCount`, `assigneeCount`)
 - `sync` — current sync metadata and lag summary
 
@@ -87,6 +87,27 @@ Response shape:
 ### `POST /api/mission-control/reconcile`
 
 Triggers the same safe full refresh used by the admin reconcile flow and returns the refreshed public Mission Control snapshot.
+
+### `POST /api/mission-control/cards/:cardRef/cross-lane-child`
+
+Creates a cross-lane child issue in Linear under the referenced parent card and returns the refreshed Mission Control board state.
+
+Request body:
+
+- `actor` — agent key creating the child; must match the parent card owner
+- `title` — required Linear issue title
+- `description` — optional issue description
+- `targetProjectSlug` or `targetProjectKey` — destination Linear board/project
+- `lane` — required target lane label
+- `risk` — optional, defaults to `risk:low`
+- `dispatch` — optional, defaults to `dispatch:ready`
+
+Response shape:
+
+- `createdIssue` — normalized Linear issue returned from the mutation
+- `parentCard` — refreshed Mission Control parent card
+- `childCard` — materialized Mission Control child card when available
+- `board` — refreshed public Mission Control snapshot
 
 ### `POST /api/mission-control/admin/reconcile`
 

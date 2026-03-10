@@ -6,6 +6,7 @@ const path = require("path");
 
 const {
   createMasterCardFromLinearIssue,
+  deriveDispatchOwner,
   normalizeDispatch,
   normalizeRisk,
 } = require("../src/mission-control/models");
@@ -110,7 +111,9 @@ describe("Mission Control registry and models", () => {
     assert.strictEqual(card.risk, normalizeRisk("risk:high"));
     assert.strictEqual(card.dispatch, normalizeDispatch("dispatch:blocked"));
     assert.strictEqual(card.status, "awaiting_review");
-    assert.deepStrictEqual(card.repoTargets, [path.normalize(path.join(os.homedir(), "dev/arcqdev/openclaw-command-center"))]);
+    assert.deepStrictEqual(card.repoTargets, [
+      path.normalize(path.join(os.homedir(), "dev/arcqdev/openclaw-command-center")),
+    ]);
     assert.deepStrictEqual(card.symphonyTargets, [
       {
         projectKey: "mission-control",
@@ -118,6 +121,62 @@ describe("Mission Control registry and models", () => {
         probeState: "unknown",
       },
     ]);
+  });
+
+  it("treats open child issues as blocking cross-lane dependencies", () => {
+    const registry = createRegistry();
+    const project = registry.projects[0];
+    const card = createMasterCardFromLinearIssue(
+      {
+        issue: {
+          ...createIssue({
+            labels: [{ id: "lane", name: "lane:jon", color: "#58a6ff" }],
+          }),
+          linkedIssues: [
+            {
+              id: "issue-child-1",
+              identifier: "ARC-44",
+              title: "Ship growth copy",
+              state: {
+                id: "state-todo",
+                name: "Todo",
+                type: "unstarted",
+                color: "#999999",
+              },
+              project: {
+                id: "project-2",
+                name: "Growth",
+                slug: "growth-board",
+                progress: 0,
+              },
+              labels: [{ id: "lane-mia", name: "lane:mia", color: "#ff66aa" }],
+              linkRole: "child",
+            },
+          ],
+          linkedIssueIds: ["issue-child-1"],
+          linkedIssueIdentifiers: ["ARC-44"],
+          linkedIssueProjectSlugs: ["growth-board"],
+        },
+        project,
+      },
+      { now: "2026-03-10T00:00:00.000Z" },
+    );
+
+    assert.strictEqual(card.status, "blocked");
+    assert.strictEqual(card.dispatchOwner, "pepper");
+    assert.deepStrictEqual(card.linkedLinearIdentifiers, ["ARC-23", "ARC-44"]);
+    assert.ok(card.dependencies.some((dependency) => dependency.id === "issue-child-1"));
+    assert.deepStrictEqual(card.source.issueLifecycles, ["new", "new"]);
+    assert.strictEqual(
+      deriveDispatchOwner({
+        lane: "lane:jon",
+        status: card.status,
+        dispatch: card.dispatch,
+        dependencies: card.dependencies,
+        issueLifecycles: card.source.issueLifecycles,
+      }),
+      "pepper",
+    );
   });
 });
 

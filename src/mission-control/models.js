@@ -304,6 +304,10 @@ function deriveResponsibleAgents(lane) {
   }
 }
 
+function isTerminalLifecycle(lifecycle) {
+  return lifecycle === "done" || lifecycle === "canceled";
+}
+
 function normalizeLinearIssueLifecycle(issueOrState) {
   const rawValue = cleanString(issueOrState).toLowerCase();
   if (
@@ -409,6 +413,36 @@ function deriveCardStatus(input = {}) {
   return "new";
 }
 
+function deriveDispatchOwner(input = {}) {
+  const lane = normalizeLane(input.lane, null);
+  const status = normalizeCardStatus(
+    input.status,
+    deriveCardStatus({
+      issueLifecycles: input.issueLifecycles || [],
+      humanReviewRequired: Boolean(input.humanReviewRequired),
+      dependencies: input.dependencies || [],
+      dispatch: normalizeDispatch(input.dispatch, null),
+    }),
+  );
+
+  if (lane === "lane:pepper") {
+    return "pepper";
+  }
+
+  if (status === "blocked" || status === "awaiting_review") {
+    return "pepper";
+  }
+
+  switch (lane) {
+    case "lane:jon":
+      return "jon";
+    case "lane:mia":
+      return "mia";
+    default:
+      return null;
+  }
+}
+
 function normalizeLatestProof(proof) {
   if (!proof) {
     return null;
@@ -495,6 +529,16 @@ function normalizeMasterCard(card, options = {}) {
     responsibleAgents: uniqueSortedStrings(
       card?.responsibleAgents || deriveResponsibleAgents(lane),
     ),
+    dispatchOwner:
+      cleanNullableString(card?.dispatchOwner) ||
+      deriveDispatchOwner({
+        lane,
+        status,
+        dispatch,
+        humanReviewRequired,
+        dependencies,
+        issueLifecycles: card?.source?.issueLifecycles || [],
+      }),
     status,
     risk,
     dispatch,
@@ -553,8 +597,23 @@ function createMasterCardFromLinearIssue(input, options = {}) {
   const lane = extractLaneFromLabels(labelNames, project?.lane || null);
   const risk = extractRiskFromLabels(labelNames, "risk:low");
   const dispatch = extractDispatchFromLabels(labelNames, null);
-  const dependencies = (issue.dependencies || []).map(normalizeDependency);
+  const linkedIssues = Array.isArray(issue.linkedIssues) ? issue.linkedIssues : [];
+  const childIssues = linkedIssues.filter((linkedIssue) => linkedIssue?.linkRole === "child");
+  const derivedDependencies = childIssues.map((linkedIssue) => ({
+    kind: "linear-issue",
+    id: cleanString(linkedIssue.id),
+    label:
+      cleanString(linkedIssue.identifier) ||
+      cleanString(linkedIssue.title) ||
+      cleanString(linkedIssue.id),
+    status: isTerminalLifecycle(normalizeLinearIssueLifecycle(linkedIssue)) ? "resolved" : "open",
+    blocking: true,
+  }));
+  const dependencies = (issue.dependencies || [])
+    .map(normalizeDependency)
+    .concat(derivedDependencies.map(normalizeDependency));
   const issueLifecycle = normalizeLinearIssueLifecycle(issue);
+  const linkedIssueLifecycles = childIssues.map(normalizeLinearIssueLifecycle);
   const reviewState = deriveHumanReviewState({
     risk,
     labelNames,
@@ -563,7 +622,7 @@ function createMasterCardFromLinearIssue(input, options = {}) {
     lowConfidence: issue.lowConfidence,
   });
   const status = deriveCardStatus({
-    issueLifecycles: [issueLifecycle],
+    issueLifecycles: [issueLifecycle].concat(linkedIssueLifecycles),
     humanReviewRequired: reviewState.humanReviewRequired,
     dependencies,
     dispatch,
@@ -572,13 +631,22 @@ function createMasterCardFromLinearIssue(input, options = {}) {
   const primaryLinearIdentifier = cleanNullableString(issue.identifier);
   const originProjectKey = cleanNullableString(project?.key);
   const linkedIssueIds = uniqueSortedStrings(
-    [primaryLinearIssueId].concat(issue.linkedIssueIds || []).filter(Boolean),
+    [primaryLinearIssueId]
+      .concat(issue.linkedIssueIds || [])
+      .concat(linkedIssues.map((linkedIssue) => linkedIssue.id))
+      .filter(Boolean),
   );
   const linkedIssueIdentifiers = uniqueSortedStrings(
-    [primaryLinearIdentifier].concat(issue.linkedIssueIdentifiers || []).filter(Boolean),
+    [primaryLinearIdentifier]
+      .concat(issue.linkedIssueIdentifiers || [])
+      .concat(linkedIssues.map((linkedIssue) => linkedIssue.identifier))
+      .filter(Boolean),
   );
   const linkedLinearProjectSlugs = uniqueSortedStrings(
-    [project?.linearProjectSlug, issue.project?.slug, issue.projectSlug].filter(Boolean),
+    [project?.linearProjectSlug, issue.project?.slug, issue.projectSlug]
+      .concat(issue.linkedIssueProjectSlugs || [])
+      .concat(linkedIssues.map((linkedIssue) => linkedIssue.project?.slug))
+      .filter(Boolean),
   );
   const repoTargets = uniqueSortedStrings([project?.repoPath].filter(Boolean));
   const symphonyTargets = project?.symphonyPort
@@ -599,6 +667,14 @@ function createMasterCardFromLinearIssue(input, options = {}) {
       summary: summarizeDescription(issue.description),
       lane,
       responsibleAgents: deriveResponsibleAgents(lane),
+      dispatchOwner: deriveDispatchOwner({
+        lane,
+        status,
+        dispatch,
+        humanReviewRequired: reviewState.humanReviewRequired,
+        dependencies,
+        issueLifecycles: [issueLifecycle].concat(linkedIssueLifecycles),
+      }),
       status,
       risk,
       dispatch,
@@ -632,7 +708,7 @@ function createMasterCardFromLinearIssue(input, options = {}) {
         type: "linear",
         projectKey: originProjectKey,
         labelNames,
-        issueLifecycles: [issueLifecycle],
+        issueLifecycles: [issueLifecycle].concat(linkedIssueLifecycles),
         lastSyncedAt: now,
         linearIssueUpdatedAt: cleanNullableString(issue.updatedAt),
       },
@@ -657,6 +733,7 @@ module.exports = {
   VALID_RISKS,
   createMasterCardFromLinearIssue,
   deriveCardStatus,
+  deriveDispatchOwner,
   deriveHumanReviewState,
   getLabelNames,
   normalizeAgentIdentity,

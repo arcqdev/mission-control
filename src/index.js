@@ -160,6 +160,31 @@ function writeJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload, null, 2));
 }
 
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+
+    req.on("end", () => {
+      if (!body.trim()) {
+        resolve({});
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(body));
+      } catch (error) {
+        reject(error);
+      }
+    });
+
+    req.on("error", reject);
+  });
+}
+
 function getMissionControlAdminMeta() {
   return {
     sseClientCount: sseClients.size,
@@ -286,6 +311,46 @@ function handleMissionControlApi(req, res, pathname) {
       })
       .catch((error) => {
         writeJson(res, 500, { error: error.message });
+      });
+
+    return true;
+  }
+
+  if (
+    pathname.startsWith("/api/mission-control/cards/") &&
+    pathname.endsWith("/cross-lane-child")
+  ) {
+    if (req.method !== "POST") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+
+    const cardRef = decodeURIComponent(
+      pathname.replace("/api/mission-control/cards/", "").replace("/cross-lane-child", ""),
+    );
+
+    readJsonBody(req)
+      .catch((error) => {
+        error.code = "validation";
+        error.message = `Invalid JSON: ${error.message}`;
+        throw error;
+      })
+      .then((body) => missionControl.createCrossLaneChildTask(cardRef, body))
+      .then((result) => {
+        writeJson(res, 201, result);
+      })
+      .catch((error) => {
+        const statusCode =
+          error.code === "not_found"
+            ? 404
+            : error.code === "forbidden"
+              ? 403
+              : error.code === "validation" ||
+                  error.code === "invalid_parent" ||
+                  error.code === "invalid_target"
+                ? 400
+                : 500;
+        writeJson(res, statusCode, { error: error.message });
       });
 
     return true;

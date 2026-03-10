@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+const { createLinearClient, normalizeIssue } = require("../src/mission-control/linear/client");
 const { createLinearSyncStore } = require("../src/mission-control/linear/store");
 const { createLinearSyncEngine } = require("../src/mission-control/linear/sync-engine");
 
@@ -87,6 +88,161 @@ describe("Mission Control Linear store", () => {
 
     const timeline = store.getTimelineForCard({ cardId: "mc:issue-1" });
     assert.strictEqual(timeline.length, 2);
+  });
+});
+
+describe("Mission Control Linear client", () => {
+  it("normalizes parent-child and related issue references", () => {
+    const issue = normalizeIssue({
+      id: "issue-parent",
+      identifier: "ARC-70",
+      title: "Parent issue",
+      description: "",
+      state: { id: "state-started", name: "In Progress", type: "started", color: "#58a6ff" },
+      project: { id: "project-1", name: "Littlebrief", slug: "littlebrief", progress: 10 },
+      team: { id: "team-1", key: "ARC", name: "ArcQ Dev" },
+      assignee: null,
+      labels: { nodes: [{ id: "lane-jon", name: "lane:jon", color: "#58a6ff" }] },
+      cycle: null,
+      parent: null,
+      children: {
+        nodes: [
+          {
+            id: "issue-child",
+            identifier: "ARC-71",
+            title: "Child issue",
+            state: { id: "state-todo", name: "Todo", type: "unstarted", color: "#999999" },
+            project: { id: "project-2", name: "Growth", slug: "growth-board", progress: 0 },
+            labels: { nodes: [{ id: "lane-mia", name: "lane:mia", color: "#ff66aa" }] },
+          },
+        ],
+      },
+      relations: {
+        nodes: [
+          {
+            id: "rel-1",
+            type: "related",
+            relatedIssue: {
+              id: "issue-related",
+              identifier: "ARC-72",
+              title: "Related issue",
+              state: { id: "state-todo", name: "Todo", type: "unstarted", color: "#999999" },
+              project: { id: "project-3", name: "Pepper", slug: "pepper-board", progress: 0 },
+              labels: { nodes: [{ id: "lane-pepper", name: "lane:pepper", color: "#d29922" }] },
+            },
+          },
+        ],
+      },
+      inverseRelations: { nodes: [] },
+    });
+
+    assert.deepStrictEqual(issue.linkedIssueIds, ["issue-child", "issue-related"]);
+    assert.deepStrictEqual(issue.linkedIssueIdentifiers, ["ARC-71", "ARC-72"]);
+    assert.strictEqual(issue.linkedIssues[0].linkRole, "child");
+    assert.strictEqual(issue.linkedIssues[1].relationType, "related");
+  });
+
+  it("creates issues and resolves label ids through the GraphQL transport", async () => {
+    const calls = [];
+    const client = createLinearClient({
+      apiKey: "linear-key",
+      transport: async ({ query, variables }) => {
+        calls.push({ query, variables });
+
+        if (query.includes("MissionControlResolveProject")) {
+          return {
+            projects: {
+              nodes: [
+                {
+                  id: "project-growth",
+                  name: "Growth",
+                  slugId: "growth-board",
+                  teams: {
+                    nodes: [{ id: "team-growth", key: "ARC", name: "ArcQ Dev" }],
+                  },
+                },
+              ],
+            },
+          };
+        }
+
+        if (query.includes("MissionControlResolveLabels")) {
+          return {
+            issueLabels: {
+              nodes: [
+                { id: "label-lane", name: "lane:mia" },
+                { id: "label-risk", name: "risk:low" },
+                { id: "label-dispatch", name: "dispatch:ready" },
+              ],
+            },
+          };
+        }
+
+        if (query.includes("MissionControlCreateIssue")) {
+          return {
+            issueCreate: {
+              success: true,
+              issue: {
+                id: "issue-created",
+                identifier: "ARC-73",
+                title: variables.input.title,
+                description: variables.input.description,
+                url: "https://linear.app/arcqdev/issue/ARC-73",
+                priority: 0,
+                estimate: null,
+                createdAt: "2026-03-10T00:00:00.000Z",
+                updatedAt: "2026-03-10T00:00:00.000Z",
+                startedAt: null,
+                completedAt: null,
+                canceledAt: null,
+                archivedAt: null,
+                state: { id: "state-todo", name: "Todo", type: "unstarted", color: "#999999" },
+                project: {
+                  id: "project-growth",
+                  name: "Growth",
+                  slug: "growth-board",
+                  progress: 0,
+                },
+                team: { id: "team-growth", key: "ARC", name: "ArcQ Dev" },
+                assignee: null,
+                labels: {
+                  nodes: [
+                    { id: "label-lane", name: "lane:mia", color: "#ff66aa" },
+                    { id: "label-risk", name: "risk:low", color: "#58a6ff" },
+                    { id: "label-dispatch", name: "dispatch:ready", color: "#3fb950" },
+                  ],
+                },
+                cycle: null,
+                parent: null,
+                children: { nodes: [] },
+                relations: { nodes: [] },
+                inverseRelations: { nodes: [] },
+              },
+            },
+          };
+        }
+
+        throw new Error("Unexpected GraphQL operation");
+      },
+    });
+
+    const project = await client.resolveProjectBySlug("growth-board");
+    const labelIds = await client.resolveLabelIdsForTeam({
+      teamId: project.team.id,
+      labelNames: ["lane:mia", "risk:low", "dispatch:ready"],
+    });
+    const createdIssue = await client.createIssue({
+      title: "Create child",
+      description: "Cross-lane work",
+      teamId: project.team.id,
+      projectId: project.id,
+      labelIds,
+    });
+
+    assert.strictEqual(project.id, "project-growth");
+    assert.deepStrictEqual(labelIds, ["label-lane", "label-risk", "label-dispatch"]);
+    assert.strictEqual(createdIssue.identifier, "ARC-73");
+    assert.strictEqual(calls.length, 3);
   });
 });
 

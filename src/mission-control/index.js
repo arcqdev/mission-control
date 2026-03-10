@@ -1,7 +1,9 @@
 const {
   createMasterCardFromLinearIssue,
   getLabelNames,
+  normalizeDispatch,
   normalizeLane,
+  normalizeRisk,
   toIsoTimestamp,
 } = require("./models");
 const { buildProjectRegistryIndexes, loadMissionControlRegistry } = require("./registry");
@@ -740,6 +742,150 @@ function createMissionControlService({
     return getPublicState().diagnostics;
   }
 
+  function resolveLaneOwner(card) {
+    const explicitOwner = String(card?.responsibleAgents?.[0] || "")
+      .trim()
+      .toLowerCase();
+    if (explicitOwner) {
+      return explicitOwner;
+    }
+
+    switch (card?.lane) {
+      case "lane:jon":
+        return "jon";
+      case "lane:mia":
+        return "mia";
+      case "lane:pepper":
+        return "pepper";
+      default:
+        return "";
+    }
+  }
+
+  async function createCrossLaneChildTask(cardRef, input = {}) {
+    const reference = findCardReference(cardRef);
+    if (!reference?.card) {
+      const error = new Error("Mission Control card not found");
+      error.code = "not_found";
+      throw error;
+    }
+
+    if (!reference.card.primaryLinearIssueId) {
+      const error = new Error("Mission Control card is missing a primary Linear issue");
+      error.code = "invalid_parent";
+      throw error;
+    }
+
+    const actor = String(input.actor || "")
+      .trim()
+      .toLowerCase();
+    const parentOwner = resolveLaneOwner(reference.card);
+    if (!actor) {
+      const error = new Error("actor is required");
+      error.code = "validation";
+      throw error;
+    }
+    if (parentOwner && actor !== parentOwner) {
+      const error = new Error(
+        `Cross-lane child tasks must be created by the parent owner '${parentOwner}'`,
+      );
+      error.code = "forbidden";
+      throw error;
+    }
+
+    const title = String(input.title || "").trim();
+    if (!title) {
+      const error = new Error("title is required");
+      error.code = "validation";
+      throw error;
+    }
+
+    if (typeof linearClient?.createIssue !== "function") {
+      const error = new Error("Linear issue creation is not available");
+      error.code = "unsupported";
+      throw error;
+    }
+
+    const description = String(input.description || "").trim();
+    const targetProjectKey = String(input.targetProjectKey || "").trim();
+    const targetProjectSlug = String(input.targetProjectSlug || "").trim();
+    const registryProject =
+      registry.projects.find(
+        (project) =>
+          project.key === targetProjectKey || project.linearProjectSlug === targetProjectSlug,
+      ) || null;
+    const projectSlug = targetProjectSlug || registryProject?.linearProjectSlug || "";
+    if (!projectSlug) {
+      const error = new Error("targetProjectSlug or targetProjectKey is required");
+      error.code = "validation";
+      throw error;
+    }
+
+    const lane = normalizeLane(input.lane || registryProject?.lane, null);
+    if (!lane) {
+      const error = new Error("A valid target lane is required");
+      error.code = "validation";
+      throw error;
+    }
+
+    const risk = normalizeRisk(input.risk || "risk:low");
+    const dispatch = normalizeDispatch(input.dispatch || "dispatch:ready", null);
+    if (!dispatch) {
+      const error = new Error("A valid dispatch state is required");
+      error.code = "validation";
+      throw error;
+    }
+
+    const projectContext =
+      typeof linearClient.resolveProjectBySlug === "function"
+        ? await linearClient.resolveProjectBySlug(projectSlug)
+        : null;
+    if (!projectContext?.id || !projectContext?.team?.id) {
+      const error = new Error(`Unable to resolve Linear project context for '${projectSlug}'`);
+      error.code = "invalid_target";
+      throw error;
+    }
+
+    const labelNames = [lane, risk, dispatch];
+    const labelIds =
+      typeof linearClient.resolveLabelIdsForTeam === "function"
+        ? await linearClient.resolveLabelIdsForTeam({
+            teamId: projectContext.team.id,
+            labelNames,
+          })
+        : [];
+
+    const createdIssue = await linearClient.createIssue({
+      title,
+      description,
+      parentId: reference.card.primaryLinearIssueId,
+      teamId: projectContext.team.id,
+      projectId: projectContext.id,
+      labelIds,
+    });
+
+    if (typeof linearSync.hydrateIssuesByIds === "function") {
+      await linearSync.hydrateIssuesByIds([reference.card.primaryLinearIssueId, createdIssue.id], {
+        source: "manual-cross-lane-child",
+      });
+    } else {
+      await linearSync.reconcile({ reason: "manual" });
+    }
+
+    const publicState = getPublicState();
+    const parentCard =
+      publicState.masterCards.find((card) => card.id === reference.card.id) || null;
+    const childCard =
+      publicState.masterCards.find((card) => card.primaryLinearIssueId === createdIssue.id) || null;
+
+    return {
+      createdIssue,
+      parentCard,
+      childCard,
+      board: publicState,
+    };
+  }
+
   return {
     start: () => {
       linearSync.bootstrap();
@@ -762,6 +908,7 @@ function createMissionControlService({
     getCardTimeline,
     replayCardTimeline,
     setActiveView: (viewId) => viewsStore.setActiveView(viewId),
+    createCrossLaneChildTask,
   };
 }
 
