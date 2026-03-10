@@ -85,6 +85,8 @@ const { getLlmUsage, getRoutingStats, startLlmUsageRefresh } = require("./llm-us
 const { executeAction } = require("./actions");
 const { migrateDataDir } = require("./data");
 const { createStateModule } = require("./state");
+const { createNotificationsModule } = require("./mission-control/notifications");
+const { handleMissionControlRequest, isMissionControlRoute } = require("./mission-control/routes");
 
 // ============================================================================
 // CONFIGURATION
@@ -137,6 +139,8 @@ const sessions = createSessionsModule({
   extractJSON,
 });
 
+let missionControlNotifications;
+
 // State module (factory pattern)
 const state = createStateModule({
   CONFIG,
@@ -149,9 +153,32 @@ const state = createStateModule({
   getDailyTokenUsage: () => getDailyTokenUsage(getOpenClawDir),
   getTokenStats,
   getCerebroTopics: (opts) => getCerebroTopics(PATHS.cerebro, opts),
+  getMissionControlState: () =>
+    missionControlNotifications
+      ? {
+          notifications: missionControlNotifications.getState(),
+        }
+      : null,
   runOpenClaw,
   extractJSON,
   readTranscript: (sessionId) => sessions.readTranscript(sessionId),
+});
+
+missionControlNotifications = createNotificationsModule({
+  config: CONFIG.integrations.missionControl.notifications,
+  dataDir: DATA_DIR,
+  onStateChange: () => {
+    if (sseClients.size === 0) {
+      return;
+    }
+
+    try {
+      const fullState = state.refreshState();
+      broadcastSSE("update", fullState);
+    } catch (error) {
+      console.error("[Mission Control] Failed to broadcast notification state:", error.message);
+    }
+  },
 });
 
 // ============================================================================
@@ -617,6 +644,11 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: "Method not allowed" }));
     }
     return;
+  } else if (isMissionControlRoute(pathname)) {
+    const handled = handleMissionControlRequest(req, res, pathname, missionControlNotifications);
+    if (handled) {
+      return;
+    }
   } else if (isJobsRoute(pathname)) {
     handleJobsRequest(req, res, pathname, query, req.method);
   } else {

@@ -184,11 +184,26 @@ function expandPath(p) {
     .replace(/\$\{HOME\}/g, HOME);
 }
 
+function envBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
+}
+
 /**
  * Build final configuration
  */
 function loadConfig() {
   const fileConfig = loadConfigFile();
+  const missionControlConfig = fileConfig.integrations?.missionControl || {};
+  const missionControlNotifications = missionControlConfig.notifications || {};
+  const missionControlDiscord = missionControlNotifications.discord || {};
   const workspace =
     process.env.OPENCLAW_WORKSPACE || expandPath(fileConfig.paths?.workspace) || detectWorkspace();
 
@@ -256,6 +271,52 @@ function loadConfig() {
         enabled: !!(process.env.LINEAR_API_KEY || fileConfig.integrations?.linear?.apiKey),
         apiKey: process.env.LINEAR_API_KEY || fileConfig.integrations?.linear?.apiKey,
         teamId: process.env.LINEAR_TEAM_ID || fileConfig.integrations?.linear?.teamId,
+      },
+      missionControl: {
+        enabled: envBoolean(
+          process.env.MISSION_CONTROL_ENABLED,
+          missionControlConfig.enabled ?? false,
+        ),
+        notifications: {
+          enabled: envBoolean(
+            process.env.MISSION_CONTROL_NOTIFICATIONS_ENABLED,
+            missionControlNotifications.enabled ?? false,
+          ),
+          discord: {
+            defaults: {
+              senderKey:
+                process.env.MISSION_CONTROL_DISCORD_DEFAULT_SENDER ||
+                missionControlDiscord.defaults?.senderKey ||
+                null,
+              destinationKey:
+                process.env.MISSION_CONTROL_DISCORD_DEFAULT_DESTINATION ||
+                missionControlDiscord.defaults?.destinationKey ||
+                null,
+            },
+            retry: {
+              maxAttempts: parseInt(
+                process.env.MISSION_CONTROL_DISCORD_MAX_ATTEMPTS ||
+                  missionControlDiscord.retry?.maxAttempts ||
+                  "3",
+                10,
+              ),
+              baseDelayMs: parseInt(
+                process.env.MISSION_CONTROL_DISCORD_RETRY_BASE_MS ||
+                  missionControlDiscord.retry?.baseDelayMs ||
+                  "1000",
+                10,
+              ),
+              maxDelayMs: parseInt(
+                process.env.MISSION_CONTROL_DISCORD_RETRY_MAX_MS ||
+                  missionControlDiscord.retry?.maxDelayMs ||
+                  "30000",
+                10,
+              ),
+            },
+            senders: missionControlDiscord.senders || {},
+            destinations: missionControlDiscord.destinations || {},
+          },
+        },
       },
     },
 

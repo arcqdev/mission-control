@@ -79,6 +79,7 @@ describe("config module", () => {
       assert.ok(config.auth, "config should have auth");
       assert.ok(config.branding, "config should have branding");
       assert.ok(config.integrations, "config should have integrations");
+      assert.ok(config.integrations.missionControl, "config should have missionControl integration");
     });
 
     it("has default port of 3333", () => {
@@ -110,6 +111,15 @@ describe("config module", () => {
       const { loadConfig } = require("../src/config");
       const config = loadConfig();
       assert.ok(config.paths.memory, "memory path should be set");
+    });
+
+    it("defaults Mission Control Discord notifications to disabled with bounded retry config", () => {
+      const { loadConfig } = require("../src/config");
+      const config = loadConfig();
+      assert.strictEqual(config.integrations.missionControl.notifications.enabled, false);
+      assert.strictEqual(config.integrations.missionControl.notifications.discord.retry.maxAttempts, 3);
+      assert.strictEqual(config.integrations.missionControl.notifications.discord.retry.baseDelayMs, 1000);
+      assert.strictEqual(config.integrations.missionControl.notifications.discord.retry.maxDelayMs, 30000);
     });
   });
 

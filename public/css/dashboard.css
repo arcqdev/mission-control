@@ -290,6 +290,48 @@ header {
   background: var(--yellow);
 }
 
+.mission-alert-banner {
+  margin: 16px 24px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(210, 153, 34, 0.1);
+}
+.mission-alert-banner.hidden {
+  display: none;
+}
+.mission-alert-banner.warn {
+  border-color: rgba(210, 153, 34, 0.45);
+  background: rgba(210, 153, 34, 0.1);
+}
+.mission-alert-banner.critical {
+  border-color: rgba(248, 81, 73, 0.5);
+  background: rgba(248, 81, 73, 0.12);
+}
+.mission-alert-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.mission-alert-icon {
+  font-size: 1rem;
+}
+.mission-alert-message {
+  margin-top: 6px;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.mission-alert-list {
+  margin: 10px 0 0 18px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.mission-alert-list li + li {
+  margin-top: 4px;
+}
+
 /* Activity State Indicators */
 @keyframes activity-pulse {
   0%,
