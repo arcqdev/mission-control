@@ -9,6 +9,7 @@
 - [Installation Guide](./guides/installation.md) _(coming soon)_
 - [Configuration Guide](./guides/configuration.md) _(coming soon)_
 - [Quick Start Tutorial](./guides/quickstart.md) _(coming soon)_
+- [ACP Discord Lifecycle Hook](./guides/acp-discord-lifecycle-hook.md)
 
 ### API Reference
 

@@ -198,6 +198,10 @@ mkdir -p ~/your-workspace/cerebro/orphans
 
 The dashboard will automatically detect and display topic data.
 
+#### ACP Discord Lifecycle Hook
+
+For ACP Discord lifecycle notifications that stay on the originating Discord thread or fall back to the parent channel, see `docs/guides/acp-discord-lifecycle-hook.md`.
+
 ---
 
 ### Multi-Profile Support
