@@ -4,6 +4,7 @@ const assert = require("node:assert");
 const {
   buildEventKey,
   createAcpDiscordLifecycleHook,
+  createGatewayPlugin,
   extractOriginRouteContext,
   normalizeHookConfig,
   resolveNotificationRoute,
@@ -222,5 +223,66 @@ describe("acp discord lifecycle hook", () => {
       writeMissionControlCards: false,
       writeAuditLogs: false,
     });
+  });
+
+  it("supports gateway plugin style event dispatch", async () => {
+    const requests = [];
+    const logger = createLogger();
+    const plugin = createGatewayPlugin({
+      logger,
+      discordTransport: {
+        async send(request) {
+          requests.push(request);
+          return { messageId: "message-9" };
+        },
+      },
+    });
+
+    const result = await plugin.onAcpLifecycleEvent({
+      type: "session_started",
+      sessionKey: "session-42",
+      originAgentAccountId: "main-discord",
+      originChannelId: "channel-1",
+      originThreadId: "thread-1",
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(requests[0].mode, "thread");
+  });
+
+  it("uses runtime context routing metadata when payload metadata is missing", async () => {
+    const requests = [];
+    const logger = createLogger();
+    const hook = createAcpDiscordLifecycleHook({
+      logger,
+      discordTransport: {
+        async send(request) {
+          requests.push(request);
+          return { messageId: "message-10" };
+        },
+      },
+    });
+
+    const result = await hook.handleEvent(
+      {
+        type: "error",
+        sessionKey: "session-42",
+        error: { message: "transport retry exhausted" },
+      },
+      undefined,
+      {
+        origin: {
+          agentAccountId: "main-discord",
+          channelId: "channel-1",
+          threadId: "thread-1",
+        },
+      },
+    );
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(requests[0].accountId, "main-discord");
+    assert.strictEqual(requests[0].threadId, "thread-1");
   });
 });

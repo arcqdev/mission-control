@@ -118,6 +118,11 @@ The transport contract is intentionally small:
 - `content` is the deterministic lifecycle message body
 - `eventKey` is the runtime dedupe key
 
+Example artifacts are included here for copy/paste deployment:
+
+- plugin wrapper: `docs/examples/acp-discord-lifecycle-hook.plugin.cjs`
+- gateway config example: `docs/examples/acp-discord-lifecycle-hook.yaml`
+
 ## Rollout Runbook
 
 1. Deploy the updated package to one Discord-enabled gateway profile.
@@ -134,6 +139,15 @@ The transport contract is intentionally small:
 8. Simulate a stale or abandoned session and confirm a single `stale_timeout` or `abandoned` post.
 9. Review gateway logs for any `[ACP Discord Hook]` warnings or errors.
 10. Expand rollout to additional Discord agent/accounts after the canary passes.
+
+## Example Files
+
+If you want a ready-to-adapt starting point, copy these files into the target gateway runtime and adjust the local transport integration:
+
+```bash
+cp docs/examples/acp-discord-lifecycle-hook.plugin.cjs /opt/openclaw/plugins/acp-discord-lifecycle-hook.cjs
+cp docs/examples/acp-discord-lifecycle-hook.yaml /etc/openclaw/acp-discord-lifecycle-hook.yaml
+```
 
 ## Verification Checklist
 

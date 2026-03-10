@@ -1,0 +1,19 @@
+discord:
+  acpLifecycleHook:
+    enabled: true
+    events:
+      - session_started
+      - turn_started
+      - turn_completed
+      - task_completed
+      - error
+      - stale_timeout
+      - abandoned
+    routing:
+      preferOriginThread: true
+      fallbackToOriginChannel: true
+      requireOriginAgentAccount: true
+    sideEffects:
+      updateLinear: false
+      writeMissionControlCards: false
+      writeAuditLogs: false
