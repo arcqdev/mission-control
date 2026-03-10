@@ -22,6 +22,7 @@ const { formatBytes, formatTimeAgo } = require("./utils");
  * @param {function} deps.runOpenClaw - function from openclaw module
  * @param {function} deps.extractJSON - function from openclaw module
  * @param {function} deps.readTranscript - function from sessions module
+ * @param {function} [deps.getMissionControlState] - function from mission-control module
  */
 function createStateModule(deps) {
   const {
@@ -38,6 +39,7 @@ function createStateModule(deps) {
     runOpenClaw,
     extractJSON,
     readTranscript,
+    getMissionControlState,
   } = deps;
 
   const PATHS = CONFIG.paths;
@@ -369,6 +371,7 @@ function createStateModule(deps) {
     let memory = {};
     let cerebro = {};
     let subagents = [];
+    let missionControl = null;
 
     // Get ALL sessions first for accurate statusCounts, then slice for display
     let allSessions = [];
@@ -457,6 +460,13 @@ function createStateModule(deps) {
     } catch (e) {
       console.error("[State] cerebro:", e.message);
     }
+    try {
+      if (typeof getMissionControlState === "function") {
+        missionControl = getMissionControlState();
+      }
+    } catch (e) {
+      console.error("[State] missionControl:", e.message);
+    }
     // Derive subagents from allSessions (no extra CLI call needed)
     // Configurable retention: SUBAGENT_RETENTION_HOURS env var (default 12h)
     try {
@@ -493,6 +503,7 @@ function createStateModule(deps) {
       cron,
       memory,
       cerebro,
+      missionControl,
       subagents,
       pagination: {
         page: 1,

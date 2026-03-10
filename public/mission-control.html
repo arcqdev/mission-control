@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mission Control - OpenClaw Command Center</title>
+    <link rel="stylesheet" href="/css/dashboard.css" />
+    <link rel="stylesheet" href="/css/mission-control.css" />
+    <script src="/js/i18n.js"></script>
+    <script src="/js/sidebar.js"></script>
+  </head>
+  <body class="mission-control-page">
+    <div id="sidebar-container"></div>
+    <div class="main-wrapper" id="main-wrapper">
+      <main class="mc-shell">
+        <section class="mc-header">
+          <div class="mc-title">
+            <h1>Mission Control</h1>
+            <p>Replay sync history, inspect divergence, and load operator-ready saved views.</p>
+          </div>
+          <div class="mc-actions">
+            <span class="mc-status-pill idle" id="mc-sync-status">Loading…</span>
+            <button class="mc-button" id="mc-refresh-button" type="button">Refresh</button>
+            <button class="mc-button" id="mc-reconcile-button" type="button">
+              Trigger reconcile
+            </button>
+          </div>
+        </section>
+
+        <section class="mc-stats-grid" id="mc-stats"></section>
+
+        <section class="mc-panel">
+          <h2>Saved Views</h2>
+          <div class="mc-view-list" id="mc-saved-views"></div>
+        </section>
+
+        <section class="mc-layout">
+          <div class="mc-table-shell">
+            <table class="mc-table">
+              <thead>
+                <tr>
+                  <th>Issue</th>
+                  <th>Lane</th>
+                  <th>Status</th>
+                  <th>Queue Age</th>
+                  <th>Divergence</th>
+                </tr>
+              </thead>
+              <tbody id="mc-card-table"></tbody>
+            </table>
+            <div class="mc-empty" id="mc-empty-state" hidden>No cards match the current view.</div>
+          </div>
+
+          <div class="mc-detail-stack">
+            <section class="mc-detail-card">
+              <div id="mc-card-detail"></div>
+            </section>
+
+            <section class="mc-runbook-card">
+              <h2>Operator Runbooks</h2>
+              <div class="mc-runbook-links" id="mc-runbooks"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/js/mission-control.js"></script>
+  </body>
+</html>

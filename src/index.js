@@ -85,12 +85,15 @@ const { getLlmUsage, getRoutingStats, startLlmUsageRefresh } = require("./llm-us
 const { executeAction } = require("./actions");
 const { migrateDataDir } = require("./data");
 const { createStateModule } = require("./state");
+const { createMissionControlService } = require("./mission-control");
 
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
 const PORT = CONFIG.server.port;
+const HOST = CONFIG.server.host;
 const DASHBOARD_DIR = path.join(__dirname, "../public");
+const DOCS_DIR = path.join(__dirname, "../docs");
 const PATHS = CONFIG.paths;
 
 const AUTH_CONFIG = {
@@ -104,6 +107,11 @@ const AUTH_CONFIG = {
 // Profile-aware data directory
 const DATA_DIR = path.join(getOpenClawDir(), "command-center", "data");
 const LEGACY_DATA_DIR = path.join(DASHBOARD_DIR, "data");
+const missionControl = createMissionControlService({
+  config: CONFIG,
+  dataDir: DATA_DIR,
+  logger: console,
+});
 
 // ============================================================================
 // SSE (Server-Sent Events)
@@ -152,6 +160,7 @@ const state = createStateModule({
   runOpenClaw,
   extractJSON,
   readTranscript: (sessionId) => sessions.readTranscript(sessionId),
+  getMissionControlState: () => missionControl.getPublicState(),
 });
 
 // ============================================================================
@@ -161,6 +170,7 @@ process.nextTick(() => migrateDataDir(DATA_DIR, LEGACY_DATA_DIR));
 startOperatorsRefresh(DATA_DIR, getOpenClawDir);
 startLlmUsageRefresh();
 startTokenUsageRefresh(getOpenClawDir);
+missionControl.start();
 
 // ============================================================================
 // STATIC FILE SERVER
@@ -220,6 +230,48 @@ function serveStatic(req, res) {
   });
 }
 
+function serveDocs(req, res) {
+  const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const pathname = requestUrl.pathname;
+
+  if (!pathname.startsWith("/docs/")) {
+    return false;
+  }
+
+  const relativePath = pathname.replace(/^\/docs\//, "");
+  const resolvedPath = path.normalize(path.join(DOCS_DIR, relativePath));
+
+  if (!resolvedPath.startsWith(DOCS_DIR) || !fs.existsSync(resolvedPath)) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+    return true;
+  }
+
+  const contentType = path.extname(resolvedPath).toLowerCase() === ".md"
+    ? "text/markdown; charset=utf-8"
+    : "text/plain; charset=utf-8";
+  res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+  res.end(fs.readFileSync(resolvedPath));
+  return true;
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
 // ============================================================================
 // LEGACY API HANDLER
 // ============================================================================
@@ -252,6 +304,7 @@ const server = http.createServer((req, res) => {
   const urlParts = req.url.split("?");
   const pathname = urlParts[0];
   const query = new URLSearchParams(urlParts[1] || "");
+  const method = req.method || "GET";
 
   // Fast path for health check
   if (pathname === "/api/health") {
@@ -284,6 +337,10 @@ const server = http.createServer((req, res) => {
     } else {
       console.log(`[AUTH] Allowed: ${req.socket?.remoteAddress} (path: ${pathname})`);
     }
+  }
+
+  if (serveDocs(req, res)) {
+    return;
   }
 
   // ---- API Routes ----
@@ -371,6 +428,17 @@ const server = http.createServer((req, res) => {
     const result = executeAction(action, { runOpenClaw, extractJSON, PORT });
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(result, null, 2));
+  } else if (pathname === missionControl.getWebhookPath() && method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", async () => {
+      const result = await missionControl.handleWebhook({ headers: req.headers, rawBody: body });
+      res.writeHead(result.statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result.body, null, 2));
+    });
+    return;
   } else if (pathname === "/api/events") {
     // SSE endpoint
     res.writeHead(200, {
@@ -431,6 +499,69 @@ const server = http.createServer((req, res) => {
     const fullState = state.getFullState();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(fullState, null, 2));
+  } else if (pathname === "/api/mission-control") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(missionControl.getPublicState(), null, 2));
+  } else if (pathname === "/api/mission-control/diagnostics") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(missionControl.getDiagnostics(), null, 2));
+  } else if (pathname === "/api/mission-control/views") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(missionControl.getSavedViews(), null, 2));
+  } else if (pathname === "/api/mission-control/views/active" && method === "POST") {
+    readJsonBody(req)
+      .then((body) => {
+        const savedViews = missionControl.setActiveView(body.viewId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(savedViews, null, 2));
+      })
+      .catch((error) => {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Invalid JSON: ${error.message}` }));
+      });
+    return;
+  } else if (pathname === "/api/mission-control/reconcile" && method === "POST") {
+    missionControl
+      .reconcile({ reason: "manual" })
+      .then((syncState) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(syncState, null, 2));
+      })
+      .catch((error) => {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: error.message }));
+      });
+    return;
+  } else if (
+    pathname.startsWith("/api/mission-control/cards/") &&
+    pathname.endsWith("/timeline")
+  ) {
+    const cardRef = decodeURIComponent(
+      pathname.replace("/api/mission-control/cards/", "").replace("/timeline", ""),
+    );
+    const timeline = missionControl.getCardTimeline(cardRef);
+    if (!timeline) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Mission Control card not found" }));
+    } else {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ timeline }, null, 2));
+    }
+  } else if (
+    pathname.startsWith("/api/mission-control/cards/") &&
+    pathname.endsWith("/replay")
+  ) {
+    const cardRef = decodeURIComponent(
+      pathname.replace("/api/mission-control/cards/", "").replace("/replay", ""),
+    );
+    const replay = missionControl.replayCardTimeline(cardRef);
+    if (!replay) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Mission Control card not found" }));
+    } else {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ replay }, null, 2));
+    }
   } else if (pathname === "/api/vitals") {
     const vitals = getSystemVitals();
     const optionalDeps = getOptionalDeps();
@@ -627,9 +758,20 @@ const server = http.createServer((req, res) => {
 // ============================================================================
 // START SERVER
 // ============================================================================
-server.listen(PORT, () => {
+function shutdown(signal) {
+  missionControl.stop();
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(0), 500).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+server.listen(PORT, HOST, () => {
   const profile = process.env.OPENCLAW_PROFILE;
-  console.log(`\u{1F99E} OpenClaw Command Center running at http://localhost:${PORT}`);
+  console.log(`\u{1F99E} OpenClaw Command Center running at http://${HOST}:${PORT}`);
   if (profile) {
     console.log(`   Profile: ${profile} (~/.openclaw-${profile})`);
   }

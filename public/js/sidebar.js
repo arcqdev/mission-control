@@ -13,6 +13,7 @@
     sessions: 0,
     cron: 0,
     jobs: 0,
+    missionControl: 0,
     memory: 0,
     cerebro: 0,
     operators: 0,
@@ -209,6 +210,11 @@
       sidebarState.jobs = Array.isArray(data.jobs) ? data.jobs.length : data.jobs.total || 0;
     }
 
+    if (data.missionControl?.stats) {
+      sidebarState.missionControl =
+        data.missionControl.stats.staleCards || data.missionControl.stats.totalCards || 0;
+    }
+
     // Update memory count
     if (data.memory) {
       sidebarState.memory = data.memory.fileCount || data.memory.totalFiles || 0;
@@ -251,6 +257,7 @@
       "nav-session-count": sidebarState.sessions,
       "nav-cron-count": sidebarState.cron,
       "nav-jobs-count": sidebarState.jobs || "-",
+      "nav-mission-control-count": sidebarState.missionControl || "-",
       "nav-memory-count": sidebarState.memory,
       "nav-cerebro-count": sidebarState.cerebro,
       "nav-operator-count": sidebarState.operators,
