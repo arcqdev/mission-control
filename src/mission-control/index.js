@@ -1,6 +1,8 @@
 const {
   createMasterCardFromLinearIssue,
+  deriveCardStatus,
   getLabelNames,
+  normalizeMasterCard,
   normalizeLane,
   toIsoTimestamp,
 } = require("./models");
@@ -183,6 +185,399 @@ function mapLinearCardToMissionCard(linearCard, { project, runtimeProject, now }
   };
 }
 
+function maxDateValue(values = [], fallback = null) {
+  let winner = fallback;
+
+  for (const value of values) {
+    if (!value) continue;
+    if (!winner || Date.parse(value) > Date.parse(winner)) {
+      winner = value;
+    }
+  }
+
+  return winner;
+}
+
+function minDateValue(values = [], fallback = null) {
+  let winner = fallback;
+
+  for (const value of values) {
+    if (!value) continue;
+    if (!winner || Date.parse(value) < Date.parse(winner)) {
+      winner = value;
+    }
+  }
+
+  return winner;
+}
+
+function normalizeLinearChildSummary(card) {
+  return {
+    id: card.primaryLinearIssueId || card.id,
+    identifier: card.primaryLinearIdentifier || card.identifier || card.id,
+    title: card.title,
+    url: card.url || null,
+    status: card.status,
+    state: card.state || null,
+    projectKey: card.projectKey || null,
+    project: card.project || null,
+    updatedAt: card.updatedAt || null,
+    completedAt: card.completedAt || null,
+    humanReviewRequired: Boolean(card.humanReviewRequired || card.status === "awaiting_review"),
+    blockedOnHumanReview: String(card.reviewReason || "").includes("blocked-on-human-review"),
+    reviewReason: card.reviewReason || null,
+  };
+}
+
+function createLinkedProjectSummary({ project, runtimeProject, providedLink = null }) {
+  return {
+    key: project?.key || null,
+    label: project?.label || project?.key || project?.linearProjectSlug || "Unmapped project",
+    linearProjectSlug: project?.linearProjectSlug || null,
+    lane: project?.lane || null,
+    url: providedLink?.url || null,
+    linkKind: providedLink?.kind || null,
+    symphony: runtimeProject?.symphony || null,
+  };
+}
+
+function deriveOutcomeHealthStrip({ childCards, runtimeProjects, lane }) {
+  const cards = Array.isArray(childCards) ? childCards : [];
+  const runtimes = Array.isArray(runtimeProjects) ? runtimeProjects : [];
+  const blocked = cards.some((card) => card.healthStrip?.blocked || card.status === "blocked");
+  const stale = cards.some((card) => card.healthStrip?.stale);
+  const degraded = runtimes.some((project) =>
+    ["degraded", "unreachable"].includes(project?.symphony?.status),
+  );
+  const ageMs = cards.reduce(
+    (largest, card) => Math.max(largest, Number(card.healthStrip?.ageMs || 0)),
+    0,
+  );
+  const staleThresholdMs = cards.reduce((smallest, card) => {
+    const value = Number(card.healthStrip?.staleThresholdMs || 0);
+    if (!Number.isFinite(value) || value <= 0) {
+      return smallest;
+    }
+    return smallest === null ? value : Math.min(smallest, value);
+  }, null);
+  const signals = [...new Set(cards.flatMap((card) => card.healthStrip?.signals || []))];
+
+  if (degraded && !signals.includes("symphony-down")) {
+    signals.push("symphony-down");
+  }
+
+  let risk = "low";
+  if (cards.some((card) => card.healthStrip?.risk === "high") || degraded || (blocked && stale)) {
+    risk = "high";
+  } else if (blocked || stale || cards.some((card) => card.healthStrip?.risk === "medium")) {
+    risk = "medium";
+  }
+
+  let status = "ok";
+  if (degraded) {
+    status = "degraded";
+  } else if (blocked) {
+    status = "blocked";
+  } else if (stale) {
+    status = "stale";
+  }
+
+  return {
+    lane: lane || null,
+    projectKey: null,
+    status,
+    degraded,
+    blocked,
+    risk,
+    signals,
+    ageMs,
+    ageLabel: formatDuration(ageMs),
+    stale,
+    staleThresholdMs,
+    staleThresholdLabel: formatDuration(staleThresholdMs || 0),
+    symphony:
+      runtimes.find((project) => ["degraded", "unreachable"].includes(project?.symphony?.status))
+        ?.symphony ||
+      runtimes[0]?.symphony ||
+      null,
+  };
+}
+
+function createOutcomeMissionCard({
+  outcome,
+  childCards,
+  projectIndexes,
+  runtimeByKey,
+  runtimeBySlug,
+  syncState,
+  now,
+}) {
+  const nowIso = toIsoTimestamp(now());
+  const cards = [...childCards].sort(
+    (left, right) => Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0),
+  );
+  const childSummaries = cards.map(normalizeLinearChildSummary);
+  const linkedIssueTargetCount = new Set([
+    ...(outcome.linkedLinearIssueIds || []),
+    ...(outcome.linkedLinearIdentifiers || []),
+  ]).size;
+  const matchedIssueCount = cards.length;
+  const terminalChildren = cards.filter((card) => ["completed", "cancelled"].includes(card.status));
+  const completedChildren = cards.filter((card) => card.status === "completed");
+  const cancelledChildren = cards.filter((card) => card.status === "cancelled");
+  const reviewChildren = childSummaries.filter((card) => card.humanReviewRequired);
+  const blockedChildren = cards.filter((card) => card.status === "blocked").length;
+  const inProgressChildren = cards.filter((card) => card.status === "in_progress").length;
+  const readyChildren = cards.filter((card) => ["ready", "new"].includes(card.status)).length;
+  const issueLifecycles = cards.map(
+    (card) => card.source?.issueLifecycles?.[0] || card.status || "new",
+  );
+  const dispatch = cards.some((card) => card.dispatch === "dispatch:blocked")
+    ? "dispatch:blocked"
+    : cards.some((card) => card.dispatch === "dispatch:ready")
+      ? "dispatch:ready"
+      : null;
+  const reviewReason = [
+    ...new Set(reviewChildren.map((card) => card.reviewReason).filter(Boolean)),
+  ].join(", ");
+  const risk = cards.some((card) => card.risk === "risk:high" || card.healthStrip?.risk === "high")
+    ? "risk:high"
+    : "risk:low";
+  const status =
+    matchedIssueCount === 0
+      ? "new"
+      : deriveCardStatus({
+          issueLifecycles,
+          humanReviewRequired: reviewChildren.length > 0,
+          dependencies: [],
+          dispatch,
+        });
+  const linkedProjectKeys = new Set(outcome.linkedProjectKeys || []);
+  const linkedProjectSlugs = new Set(outcome.linkedLinearProjectSlugs || []);
+
+  for (const card of cards) {
+    for (const projectKey of card.originProjects || []) {
+      linkedProjectKeys.add(projectKey);
+    }
+    for (const projectSlug of card.linkedLinearProjectSlugs || []) {
+      linkedProjectSlugs.add(projectSlug);
+    }
+  }
+
+  for (const projectSlug of linkedProjectSlugs) {
+    const project = projectIndexes.projectByLinearSlug.get(projectSlug);
+    if (project?.key) {
+      linkedProjectKeys.add(project.key);
+    }
+  }
+
+  const linkedProjects = [...linkedProjectKeys]
+    .map((projectKey) => {
+      const project = projectIndexes.projectByKey.get(projectKey);
+      if (!project) {
+        return null;
+      }
+      const providedLink = (outcome.links || []).find(
+        (link) => link.projectKey === project.key || link.projectSlug === project.linearProjectSlug,
+      );
+      const runtimeProject =
+        runtimeByKey.get(project.key) ||
+        runtimeBySlug.get(project.linearProjectSlug) ||
+        createDefaultRuntimeProject(project);
+
+      return createLinkedProjectSummary({ project, runtimeProject, providedLink });
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.label.localeCompare(right.label));
+  const runtimeProjects = linkedProjects
+    .map((project) => runtimeByKey.get(project.key) || runtimeBySlug.get(project.linearProjectSlug))
+    .filter(Boolean);
+  const createdAt =
+    minDateValue(
+      cards.map((card) => card.createdAt),
+      outcome.createdAt || nowIso,
+    ) ||
+    outcome.createdAt ||
+    nowIso;
+  const updatedAt =
+    maxDateValue(
+      cards.map((card) => card.updatedAt),
+      outcome.updatedAt || syncState?.lastSuccessfulAt || nowIso,
+    ) ||
+    outcome.updatedAt ||
+    syncState?.lastSuccessfulAt ||
+    nowIso;
+  const completedAt =
+    status === "completed"
+      ? maxDateValue(
+          completedChildren.map((card) => card.completedAt || card.updatedAt),
+          syncState?.lastSuccessfulAt || updatedAt,
+        )
+      : null;
+  const healthStrip = deriveOutcomeHealthStrip({
+    childCards: cards,
+    runtimeProjects,
+    lane: outcome.lane || linkedProjects[0]?.lane || null,
+  });
+  const links = [...(outcome.links || [])];
+
+  for (const child of childSummaries) {
+    if (child.url && !links.some((link) => link.url === child.url)) {
+      links.push({
+        kind: "issue",
+        label: child.identifier || child.title,
+        url: child.url,
+        issueId: child.id,
+        identifier: child.identifier,
+        projectSlug: child.project?.slug || null,
+      });
+    }
+  }
+
+  const baseCard = normalizeMasterCard(
+    {
+      id: `mc-outcome:${outcome.key}`,
+      cardType: "outcome",
+      outcomeId: outcome.key,
+      missionKey: outcome.missionKey,
+      title: outcome.title,
+      summary:
+        outcome.summary ||
+        `${matchedIssueCount}/${linkedIssueTargetCount} linked Linear issue(s) tracked`,
+      lane: outcome.lane || linkedProjects[0]?.lane || null,
+      responsibleAgents: outcome.responsibleAgents || [],
+      status,
+      risk,
+      dispatch,
+      originProjects: [...linkedProjectKeys],
+      repoTargets: linkedProjects
+        .map((project) => projectIndexes.projectByKey.get(project.key)?.repoPath)
+        .filter(Boolean),
+      symphonyTargets: linkedProjects
+        .map((project) => {
+          const registryProject = projectIndexes.projectByKey.get(project.key);
+          return registryProject?.symphonyPort
+            ? {
+                projectKey: registryProject.key,
+                port: registryProject.symphonyPort,
+                probeState: runtimeByKey.get(registryProject.key)?.symphony?.status || "unknown",
+              }
+            : null;
+        })
+        .filter(Boolean),
+      primaryLinearIssueId: cards[0]?.primaryLinearIssueId || "",
+      primaryLinearIdentifier: null,
+      linkedLinearIssueIds: [
+        ...new Set(
+          cards
+            .map((card) => card.primaryLinearIssueId)
+            .filter(Boolean)
+            .concat(outcome.linkedLinearIssueIds || []),
+        ),
+      ],
+      linkedLinearIdentifiers: [
+        ...new Set(
+          cards
+            .map((card) => card.primaryLinearIdentifier)
+            .filter(Boolean)
+            .concat(outcome.linkedLinearIdentifiers || []),
+        ),
+      ],
+      linkedLinearProjectSlugs: [...linkedProjectSlugs],
+      latestProof: cards[0]?.latestProof || null,
+      latestUpdate:
+        cards[0]?.latestUpdate ||
+        (cards[0]
+          ? {
+              summary: `Latest child update · ${cards[0].primaryLinearIdentifier || cards[0].id}`,
+              actor: cards[0].assignee?.name || null,
+              source: "linear",
+              capturedAt: cards[0].updatedAt,
+            }
+          : null),
+      humanReviewRequired: reviewChildren.length > 0,
+      reviewReason: reviewReason || null,
+      alertState: [],
+      polling: {
+        enabled: matchedIssueCount > 0 && !["completed", "cancelled"].includes(status),
+        intervalMs: Number(syncState?.pollIntervalMs || 120000),
+        lastSyncAt: syncState?.lastSuccessfulAt || null,
+        lastErrorAt: syncState?.status === "error" ? syncState?.lastAttemptedAt || null : null,
+        errorCount: syncState?.status === "error" ? 1 : 0,
+      },
+      notificationPolicy: outcome.notificationPolicy,
+      source: {
+        type: "outcome-rollup",
+        projectKey: linkedProjects[0]?.key || null,
+        labelNames: [],
+        issueLifecycles,
+        lastSyncedAt: syncState?.lastSuccessfulAt || null,
+        linearIssueUpdatedAt: updatedAt,
+      },
+      createdAt,
+      updatedAt,
+      completedAt,
+      archivedAt: null,
+    },
+    { now: updatedAt },
+  );
+
+  return {
+    ...baseCard,
+    identifier: outcome.missionKey,
+    url: outcome.links?.[0]?.url || childSummaries[0]?.url || null,
+    priority: null,
+    estimate: null,
+    startedAt: cards[0]?.startedAt || null,
+    canceledAt:
+      cancelledChildren.length === matchedIssueCount && matchedIssueCount > 0 ? updatedAt : null,
+    state: {
+      id: null,
+      name:
+        matchedIssueCount === 0
+          ? "Waiting for linked issues"
+          : `${terminalChildren.length}/${matchedIssueCount} terminal`,
+      type: status,
+      color: null,
+    },
+    project:
+      linkedProjects.length === 1
+        ? {
+            id: null,
+            name: linkedProjects[0].label,
+            slug: linkedProjects[0].linearProjectSlug,
+            progress: null,
+          }
+        : {
+            id: null,
+            name: `${linkedProjects.length} linked projects`,
+            slug: linkedProjects[0]?.linearProjectSlug || null,
+            progress: null,
+          },
+    team: null,
+    assignee: null,
+    labels: [],
+    cycle: null,
+    projectKey: linkedProjects[0]?.key || null,
+    healthStrip,
+    links,
+    linkedProjects,
+    linearChildren: childSummaries,
+    childStats: {
+      linkedIssueTargetCount,
+      matchedIssueCount,
+      unmatchedIssueCount: Math.max(0, linkedIssueTargetCount - matchedIssueCount),
+      terminalIssueCount: terminalChildren.length,
+      completedIssueCount: completedChildren.length,
+      cancelledIssueCount: cancelledChildren.length,
+      awaitingReviewIssueCount: reviewChildren.length,
+      blockedIssueCount: blockedChildren,
+      inProgressIssueCount: inProgressChildren,
+      readyIssueCount: readyChildren,
+    },
+  };
+}
+
 function buildLaneSummaries(projects, cards) {
   const laneMap = new Map();
 
@@ -270,7 +665,7 @@ function buildLaneSummaries(projects, cards) {
 
 function buildMissionControlPublicState({
   linearState = {},
-  registry = { projects: [], agents: [], discordDestinations: [] },
+  registry = { projects: [], agents: [], discordDestinations: [], outcomes: [] },
   runtimeState = { updatedAt: null, projects: [] },
   now = Date.now,
 } = {}) {
@@ -278,7 +673,9 @@ function buildMissionControlPublicState({
   const projectIndexes = buildProjectRegistryIndexes(registry);
   const { runtimeByKey, runtimeBySlug } = buildRuntimeIndexes(runtimeState);
 
-  const masterCards = linearCards.map((linearCard) => {
+  const missionCardsByIssueId = new Map();
+  const missionCardsByIdentifier = new Map();
+  const mappedLinearCards = linearCards.map((linearCard) => {
     const project =
       projectIndexes.projectByLinearSlug.get(linearCard.project?.slug) ||
       createFallbackProject(linearCard);
@@ -299,6 +696,60 @@ function buildMissionControlPublicState({
     };
   });
 
+  for (const card of mappedLinearCards) {
+    if (card.primaryLinearIssueId) {
+      missionCardsByIssueId.set(card.primaryLinearIssueId, card);
+    }
+    if (card.primaryLinearIdentifier) {
+      missionCardsByIdentifier.set(card.primaryLinearIdentifier, card);
+    }
+  }
+
+  const groupedIssueIds = new Set();
+  const outcomeCards = (registry.outcomes || []).map((outcome) => {
+    const linkedChildren = [];
+    const seen = new Set();
+
+    for (const issueId of outcome.linkedLinearIssueIds || []) {
+      const child = missionCardsByIssueId.get(issueId);
+      if (child && !seen.has(child.id)) {
+        linkedChildren.push(child);
+        seen.add(child.id);
+        groupedIssueIds.add(child.primaryLinearIssueId);
+      }
+    }
+
+    for (const identifier of outcome.linkedLinearIdentifiers || []) {
+      const child = missionCardsByIdentifier.get(identifier);
+      if (child && !seen.has(child.id)) {
+        linkedChildren.push(child);
+        seen.add(child.id);
+        groupedIssueIds.add(child.primaryLinearIssueId);
+      }
+    }
+
+    const card = createOutcomeMissionCard({
+      outcome,
+      childCards: linkedChildren,
+      projectIndexes,
+      runtimeByKey,
+      runtimeBySlug,
+      syncState: linearState.sync || {},
+      now,
+    });
+
+    return {
+      ...card,
+      notificationPolicy: deriveCardNotificationPolicy({ card, registry }),
+    };
+  });
+  const standaloneCards = mappedLinearCards.filter(
+    (card) => !groupedIssueIds.has(card.primaryLinearIssueId),
+  );
+  const masterCards = [...outcomeCards, ...standaloneCards].sort(
+    (left, right) => Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0),
+  );
+
   const projectMap = new Map();
   for (const project of registry.projects || []) {
     projectMap.set(project.key, project);
@@ -318,7 +769,10 @@ function buildMissionControlPublicState({
 
   const projects = Array.from(projectMap.values())
     .map((project) => {
-      const projectCards = masterCards.filter((card) => card.projectKey === project.key);
+      const projectCards = masterCards.filter(
+        (card) =>
+          card.projectKey === project.key || (card.originProjects || []).includes(project.key),
+      );
       const runtimeProject =
         runtimeByKey.get(project.key) ||
         runtimeBySlug.get(project.linearProjectSlug) ||
@@ -562,6 +1016,7 @@ function createMissionControlService({
       projects: [],
       agents: [],
       discordDestinations: [],
+      outcomes: [],
       createdAt: toIsoTimestamp(now()),
       updatedAt: toIsoTimestamp(now()),
       host: null,
@@ -588,6 +1043,8 @@ function createMissionControlService({
         cardId: card.id,
         issueId: card.primaryLinearIssueId,
         identifier: card.primaryLinearIdentifier,
+        issueIds: card.linkedLinearIssueIds,
+        identifiers: card.linkedLinearIdentifiers,
       });
 
       return {
@@ -625,6 +1082,7 @@ function createMissionControlService({
         projects: registry.projects,
         agents: registry.agents,
         discordDestinations: registry.discordDestinations,
+        outcomes: registry.outcomes,
       },
       notifications: notificationService?.getPublicState() || {
         status: "ok",
@@ -672,7 +1130,20 @@ function createMissionControlService({
   });
 
   linearSync = createLinearSyncEngine({
-    config: config.integrations?.linear || {},
+    config: {
+      ...(config.integrations?.linear || {}),
+      projectSlugs: [
+        ...new Set(
+          []
+            .concat(config.integrations?.linear?.projectSlugs || [])
+            .concat(
+              (registry.outcomes || []).flatMap(
+                (outcome) => outcome.linkedLinearProjectSlugs || [],
+              ),
+            ),
+        ),
+      ],
+    },
     dataDir,
     logger,
     now,
@@ -713,6 +1184,8 @@ function createMissionControlService({
       cardId: match.id,
       issueId: match.primaryLinearIssueId,
       identifier: match.primaryLinearIdentifier,
+      issueIds: match.linkedLinearIssueIds,
+      identifiers: match.linkedLinearIdentifiers,
       card: match,
     };
   }

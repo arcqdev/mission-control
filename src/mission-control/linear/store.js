@@ -174,7 +174,10 @@ function createSyncStateSnapshot(snapshot, now) {
 }
 
 function applyEvent(snapshot, event) {
-  snapshot.eventCount = Math.max(snapshot.eventCount, Number(event.sequence || snapshot.eventCount + 1));
+  snapshot.eventCount = Math.max(
+    snapshot.eventCount,
+    Number(event.sequence || snapshot.eventCount + 1),
+  );
 
   switch (event.type) {
     case "mission-control.registry.bootstrapped":
@@ -271,7 +274,13 @@ function createLinearSyncStore({
   try {
     const events = readJsonlEvents(eventLogPath);
     if (events.length > 0) {
-      snapshot = createInitialSnapshot({ now, pollIntervalMs, projectSlugs, webhook, registry: snapshot.registry });
+      snapshot = createInitialSnapshot({
+        now,
+        pollIntervalMs,
+        projectSlugs,
+        webhook,
+        registry: snapshot.registry,
+      });
       for (const event of events) {
         applyEvent(snapshot, event);
       }
@@ -386,7 +395,9 @@ function createLinearSyncStore({
     if (deliveryId) {
       snapshot.sync.webhook.recentDeliveryIds = [
         deliveryId,
-        ...snapshot.sync.webhook.recentDeliveryIds.filter((existingId) => existingId !== deliveryId),
+        ...snapshot.sync.webhook.recentDeliveryIds.filter(
+          (existingId) => existingId !== deliveryId,
+        ),
       ].slice(0, RECENT_DELIVERY_LIMIT);
     }
 
@@ -535,10 +546,23 @@ function createLinearSyncStore({
 
   function getTimelineForCard(reference = {}) {
     const wantedCardIds = new Set(
-      [reference.cardId, reference.issueId ? `mc:${reference.issueId}` : null].filter(Boolean),
+      []
+        .concat(reference.cardIds || [])
+        .concat([reference.cardId, reference.issueId ? `mc:${reference.issueId}` : null])
+        .filter(Boolean),
     );
-    const wantedIssueIds = new Set([reference.issueId].filter(Boolean));
-    const wantedIdentifiers = new Set([reference.identifier].filter(Boolean));
+    const wantedIssueIds = new Set(
+      []
+        .concat(reference.issueIds || [])
+        .concat([reference.issueId])
+        .filter(Boolean),
+    );
+    const wantedIdentifiers = new Set(
+      []
+        .concat(reference.identifiers || [])
+        .concat([reference.identifier])
+        .filter(Boolean),
+    );
 
     return readEventLog().filter((event) => {
       if (event.type.startsWith("mission-control.linear.reconcile.")) {

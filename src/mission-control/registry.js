@@ -35,6 +35,7 @@ const {
   MISSION_CONTROL_SCHEMA_VERSION,
   normalizeAgentIdentity,
   normalizeDiscordDestination,
+  normalizeMissionOutcome,
   normalizeProjectRegistryEntry,
   toIsoTimestamp,
 } = require("./models");
@@ -91,6 +92,7 @@ function loadMissionControlRegistry(config = {}, options = {}) {
       ? missionControlConfig.agents
       : DEFAULT_AGENT_IDENTITIES;
   const rawDiscordDestinations = missionControlConfig.discordDestinations || [];
+  const rawOutcomes = missionControlConfig.outcomes || missionControlConfig.missions || [];
 
   const projects = sortByKey(
     rawProjects.map((project) => normalizeProjectRegistryEntry(project, { now })),
@@ -99,21 +101,28 @@ function loadMissionControlRegistry(config = {}, options = {}) {
   const discordDestinations = sortByKey(
     rawDiscordDestinations.map((destination) => normalizeDiscordDestination(destination)),
   );
+  const outcomes = sortByKey(
+    rawOutcomes.map((outcome) => normalizeMissionOutcome(outcome, { now })),
+  );
 
   ensureUnique(projects, "key", "project registry");
   ensureUnique(projects, "linearProjectSlug", "project registry");
   ensureUnique(agents, "key", "agent registry");
   ensureUnique(discordDestinations, "key", "Discord destinations");
+  ensureUnique(outcomes, "key", "outcomes");
+  ensureUnique(outcomes, "missionKey", "outcomes");
 
   return {
     schemaVersion: MISSION_CONTROL_SCHEMA_VERSION,
     projectCount: projects.length,
+    outcomeCount: outcomes.length,
     createdAt: now,
     updatedAt: now,
     host: os.hostname(),
     projects,
     agents,
     discordDestinations,
+    outcomes,
   };
 }
 

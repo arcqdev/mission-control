@@ -20,6 +20,20 @@ const VALID_CARD_STATUSES = new Set([
 ]);
 const VALID_DEPENDENCY_KINDS = new Set(["master-card", "linear-issue", "human-review", "external"]);
 const VALID_DEPENDENCY_STATUSES = new Set(["open", "resolved"]);
+const HUMAN_REVIEW_LABELS = new Set([
+  "human-review",
+  "human_review",
+  "human review",
+  "awaiting-review",
+  "awaiting_review",
+  "awaiting review",
+  "needs-review",
+  "needs_review",
+  "needs review",
+  "blocked-on-human-review",
+  "blocked_on_human_review",
+  "blocked on human review",
+]);
 
 function toIsoTimestamp(value = new Date()) {
   if (value instanceof Date) {
@@ -291,6 +305,70 @@ function normalizeDiscordDestination(destination) {
   };
 }
 
+function normalizeOutcomeLink(link) {
+  const url = cleanNullableString(link?.url);
+  if (!url) {
+    return null;
+  }
+
+  return {
+    kind: cleanString(link?.kind) || "external",
+    label: cleanString(link?.label) || url,
+    url,
+    projectKey: cleanNullableString(link?.projectKey),
+    projectSlug: cleanNullableString(link?.projectSlug),
+    issueId: cleanNullableString(link?.issueId),
+    identifier: cleanNullableString(link?.identifier),
+  };
+}
+
+function normalizeMissionOutcome(outcome, options = {}) {
+  const now = toIsoTimestamp(options.now);
+  const key = cleanString(outcome?.key || outcome?.id);
+  if (!key) {
+    throw new Error("Mission Control outcome is missing key");
+  }
+
+  const title = cleanString(outcome?.title);
+  if (!title) {
+    throw new Error(`Mission Control outcome '${key}' is missing title`);
+  }
+
+  const lane = normalizeLane(outcome?.lane, null);
+  const missionKey = cleanNullableString(outcome?.missionKey) || key;
+  const linkedLinearIdentifiers = uniqueSortedStrings(outcome?.linkedLinearIdentifiers || []);
+  const linkedLinearIssueIds = uniqueSortedStrings(outcome?.linkedLinearIssueIds || []);
+
+  if (linkedLinearIdentifiers.length === 0 && linkedLinearIssueIds.length === 0) {
+    throw new Error(
+      `Mission Control outcome '${key}' must declare linkedLinearIdentifiers or linkedLinearIssueIds`,
+    );
+  }
+
+  return {
+    key,
+    missionKey,
+    title,
+    summary: summarizeDescription(outcome?.summary || outcome?.description || ""),
+    lane,
+    responsibleAgents: uniqueSortedStrings(
+      outcome?.responsibleAgents || deriveResponsibleAgents(lane),
+    ),
+    linkedLinearIdentifiers,
+    linkedLinearIssueIds,
+    linkedLinearProjectSlugs: uniqueSortedStrings(outcome?.linkedLinearProjectSlugs || []),
+    linkedProjectKeys: uniqueSortedStrings(outcome?.linkedProjectKeys || []),
+    notificationPolicy: {
+      enabled: outcome?.notificationPolicy?.enabled !== false,
+      destinationKey: cleanNullableString(outcome?.notificationPolicy?.destinationKey),
+      senderIdentity: cleanNullableString(outcome?.notificationPolicy?.senderIdentity),
+    },
+    links: (outcome?.links || []).map(normalizeOutcomeLink).filter(Boolean),
+    createdAt: toIsoTimestamp(outcome?.createdAt || now),
+    updatedAt: toIsoTimestamp(outcome?.updatedAt || now),
+  };
+}
+
 function deriveResponsibleAgents(lane) {
   switch (lane) {
     case "lane:jon":
@@ -347,9 +425,42 @@ function normalizeLinearIssueLifecycle(issueOrState) {
   return "new";
 }
 
+function deriveReviewSignals(input = {}) {
+  const labelNames = new Set(
+    uniqueSortedStrings(input.labelNames || []).map((label) => label.toLowerCase()),
+  );
+  const stateType = cleanString(input.stateType).toLowerCase();
+  const stateName = cleanString(input.stateName || input.status).toLowerCase();
+  const explicitRequired = input.humanReviewRequired === true;
+  const labelTriggered = [...labelNames].some((label) => HUMAN_REVIEW_LABELS.has(label));
+  const awaitingReview =
+    stateType === "review" ||
+    /(^|\b)(awaiting|needs|pending|in) review(\b|$)/.test(stateName) ||
+    /(^|\b)human review(\b|$)/.test(stateName);
+  const blockedOnHumanReview =
+    (/blocked/.test(stateName) && /review/.test(stateName)) ||
+    labelNames.has("blocked-on-human-review") ||
+    labelNames.has("blocked_on_human_review") ||
+    labelNames.has("blocked on human review");
+  const active = explicitRequired || labelTriggered || awaitingReview || blockedOnHumanReview;
+
+  return {
+    active,
+    awaitingReview,
+    blockedOnHumanReview,
+  };
+}
+
 function deriveHumanReviewState(input = {}) {
   const labelNames = new Set(uniqueSortedStrings(input.labelNames || []));
   const reasons = [];
+  const reviewSignals = deriveReviewSignals(input);
+
+  if (reviewSignals.blockedOnHumanReview) {
+    reasons.push("blocked-on-human-review");
+  } else if (reviewSignals.awaitingReview) {
+    reasons.push("awaiting-review");
+  }
 
   if (normalizeRisk(input.risk) === "risk:high") {
     reasons.push("risk:high");
@@ -365,8 +476,11 @@ function deriveHumanReviewState(input = {}) {
   }
 
   return {
-    humanReviewRequired: reasons.length > 0,
-    reviewReason: reasons.length > 0 ? reasons.join(", ") : null,
+    humanReviewRequired: reviewSignals.active || reasons.length > 0,
+    reviewReason:
+      reviewSignals.active || reasons.length > 0 ? reasons.join(", ") || "human-review" : null,
+    awaitingReview: reviewSignals.awaitingReview,
+    blockedOnHumanReview: reviewSignals.blockedOnHumanReview,
   };
 }
 
@@ -488,6 +602,8 @@ function normalizeMasterCard(card, options = {}) {
 
   return {
     id: cleanString(card?.id),
+    cardType: cleanString(card?.cardType) || "linear",
+    outcomeId: cleanNullableString(card?.outcomeId),
     missionKey: cleanNullableString(card?.missionKey),
     title: cleanString(card?.title),
     summary: cleanString(card?.summary),
@@ -658,15 +774,18 @@ module.exports = {
   createMasterCardFromLinearIssue,
   deriveCardStatus,
   deriveHumanReviewState,
+  deriveReviewSignals,
   getLabelNames,
   normalizeAgentIdentity,
   normalizeCardStatus,
   normalizeDependency,
   normalizeDispatch,
+  normalizeMissionOutcome,
   normalizeLane,
   normalizeLinearIssueLifecycle,
   normalizeDiscordDestination,
   normalizeMasterCard,
+  normalizeOutcomeLink,
   normalizeProjectRegistryEntry,
   normalizeRisk,
   toIsoTimestamp,
