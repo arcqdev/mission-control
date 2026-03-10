@@ -144,6 +144,7 @@ function createLinearSyncEngine(options = {}) {
       enabled: Boolean(config.webhookSecret),
       path: config.webhookPath,
     },
+    registry: options.registry || null,
     onChange: onStateChange,
   });
 
@@ -460,6 +461,7 @@ function createLinearSyncEngine(options = {}) {
   }
 
   return {
+    bootstrap: () => store.bootstrap(),
     start,
     stop,
     reconcile,

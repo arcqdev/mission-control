@@ -5,12 +5,11 @@ const os = require("os");
 const path = require("path");
 
 const {
-  deriveMasterCardFromLinearIssue,
-  HIGH_RISK,
-  DISPATCH_BLOCKED,
-  STATUS_AWAITING_REVIEW,
+  createMasterCardFromLinearIssue,
+  normalizeDispatch,
+  normalizeRisk,
 } = require("../src/mission-control/models");
-const { createProjectRegistry } = require("../src/mission-control/registry");
+const { loadMissionControlRegistry } = require("../src/mission-control/registry");
 const {
   CARDS_SNAPSHOT_FILENAME,
   EVENT_LOG_FILENAME,
@@ -25,16 +24,18 @@ function createTempDir() {
 }
 
 function createRegistry() {
-  return createProjectRegistry({
-    projects: [
-      {
-        key: "mission-control",
-        repoPath: "~/dev/arcqdev/openclaw-command-center",
-        linearSlug: "mission-control",
-        lane: "lane:jon",
-        symphonyPort: 45123,
-      },
-    ],
+  return loadMissionControlRegistry({
+    missionControl: {
+      projects: [
+        {
+          key: "mission-control",
+          repoPath: "~/dev/arcqdev/openclaw-command-center",
+          linearProjectSlug: "mission-control",
+          lane: "lane:jon",
+          symphonyPort: 45123,
+        },
+      ],
+    },
   });
 }
 
@@ -82,35 +83,39 @@ function createIssue(overrides = {}) {
 
 describe("Mission Control registry and models", () => {
   it("loads the canonical project registry model", () => {
-    const registry = createProjectRegistry();
+    const registry = loadMissionControlRegistry();
 
-    assert.strictEqual(registry.version, 1);
+    assert.strictEqual(registry.schemaVersion, 1);
     assert.ok(registry.projects.length >= 4);
     assert.ok(registry.projects.find((project) => project.key === "littlebrief"));
-    assert.ok(registry.projects.find((project) => project.linearSlug === "3237d374634d"));
+    assert.ok(registry.projects.find((project) => project.linearProjectSlug === "3237d374634d"));
   });
 
   it("derives normalized risk, dispatch, and status from Linear issues", () => {
     const registry = createRegistry();
-    const card = deriveMasterCardFromLinearIssue(
-      createIssue({
-        labels: [
-          { id: "label-1", name: "dispatch:blocked", color: "#ff0000" },
-          { id: "label-2", name: "risk:high", color: "#ffaa00" },
-        ],
-      }),
-      { registry },
+    const project = registry.projects[0];
+    const card = createMasterCardFromLinearIssue(
+      {
+        issue: createIssue({
+          labels: [
+            { id: "label-1", name: "dispatch:blocked", color: "#ff0000" },
+            { id: "label-2", name: "risk:high", color: "#ffaa00" },
+          ],
+        }),
+        project,
+      },
+      { now: "2026-03-10T00:00:00.000Z" },
     );
 
-    assert.strictEqual(card.risk, HIGH_RISK);
-    assert.strictEqual(card.dispatch, DISPATCH_BLOCKED);
-    assert.strictEqual(card.status, STATUS_AWAITING_REVIEW);
+    assert.strictEqual(card.risk, normalizeRisk("risk:high"));
+    assert.strictEqual(card.dispatch, normalizeDispatch("dispatch:blocked"));
+    assert.strictEqual(card.status, "awaiting_review");
     assert.deepStrictEqual(card.repoTargets, [path.normalize(path.join(os.homedir(), "dev/arcqdev/openclaw-command-center"))]);
     assert.deepStrictEqual(card.symphonyTargets, [
       {
         projectKey: "mission-control",
         port: 45123,
-        status: "unknown",
+        probeState: "unknown",
       },
     ]);
   });
@@ -120,6 +125,7 @@ describe("Mission Control durable store", () => {
   it("writes atomic snapshots and replays the append-only event log after restart", () => {
     const dataDir = createTempDir();
     const registry = createRegistry();
+    const project = registry.projects[0];
     let currentTime = Date.parse("2026-03-10T00:00:00.000Z");
     const now = () => currentTime;
 
@@ -135,18 +141,30 @@ describe("Mission Control durable store", () => {
     });
 
     store.bootstrap();
-    const initialCard = deriveMasterCardFromLinearIssue(createIssue({
-      labels: [
-        { id: "b", name: "dispatch:ready", color: "#00ff99" },
-        { id: "a", name: "risk:high", color: "#ffaa00" },
-      ],
-    }), { registry });
-    const noopCard = deriveMasterCardFromLinearIssue(createIssue({
-      labels: [
-        { id: "a", name: "risk:high", color: "#ffaa00" },
-        { id: "b", name: "dispatch:ready", color: "#00ff99" },
-      ],
-    }), { registry });
+    const initialCard = createMasterCardFromLinearIssue(
+      {
+        issue: createIssue({
+          labels: [
+            { id: "b", name: "dispatch:ready", color: "#00ff99" },
+            { id: "a", name: "risk:high", color: "#ffaa00" },
+          ],
+        }),
+        project,
+      },
+      { now: "2026-03-10T00:00:00.000Z" },
+    );
+    const noopCard = createMasterCardFromLinearIssue(
+      {
+        issue: createIssue({
+          labels: [
+            { id: "a", name: "risk:high", color: "#ffaa00" },
+            { id: "b", name: "dispatch:ready", color: "#00ff99" },
+          ],
+        }),
+        project,
+      },
+      { now: "2026-03-10T00:00:00.000Z" },
+    );
 
     const first = store.upsertCard(initialCard, {
       source: "poller",

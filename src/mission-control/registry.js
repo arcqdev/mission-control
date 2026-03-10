@@ -1,5 +1,36 @@
 const os = require("os");
 
+const DEFAULT_PROJECT_REGISTRY = Object.freeze([
+  {
+    key: "littlebrief",
+    repoPath: "~/dev/arcqdev/littlebrief",
+    linearProjectSlug: "0c92ed8e2c84",
+    lane: "lane:jon",
+    symphonyPort: 45123,
+  },
+  {
+    key: "lobster-list",
+    repoPath: "~/dev/arcqdev/lobster-list",
+    linearProjectSlug: "b4deb8dc42ef",
+    lane: "lane:jon",
+    symphonyPort: 45124,
+  },
+  {
+    key: "usecase4claw-execution",
+    repoPath: "~/dev/arcqdev/usecase4claw",
+    linearProjectSlug: "3237d374634d",
+    lane: "lane:jon",
+    symphonyPort: 45125,
+  },
+  {
+    key: "usecase4claw-growth",
+    repoPath: "~/dev/arcqdev/usecase4claw",
+    linearProjectSlug: "fce22723ee3a",
+    lane: "lane:mia",
+    symphonyPort: null,
+  },
+]);
+
 const {
   MISSION_CONTROL_SCHEMA_VERSION,
   normalizeAgentIdentity,
@@ -51,7 +82,10 @@ function ensureUnique(items, fieldName, collectionName) {
 function loadMissionControlRegistry(config = {}, options = {}) {
   const now = toIsoTimestamp(options.now);
   const missionControlConfig = config.missionControl || {};
-  const rawProjects = missionControlConfig.projects || missionControlConfig.projectRegistry || [];
+  const rawProjects =
+    missionControlConfig.projects?.length || missionControlConfig.projectRegistry?.length
+      ? missionControlConfig.projects || missionControlConfig.projectRegistry
+      : DEFAULT_PROJECT_REGISTRY;
   const rawAgents =
     missionControlConfig.agents && missionControlConfig.agents.length > 0
       ? missionControlConfig.agents
@@ -97,6 +131,7 @@ function buildProjectRegistryIndexes(registry) {
 
 module.exports = {
   DEFAULT_AGENT_IDENTITIES,
+  DEFAULT_PROJECT_REGISTRY,
   buildProjectRegistryIndexes,
   loadMissionControlRegistry,
 };
