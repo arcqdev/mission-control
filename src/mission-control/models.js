@@ -638,8 +638,12 @@ function createMasterCardFromLinearIssue(input, options = {}) {
       },
       createdAt: now,
       updatedAt: now,
-      completedAt: status === "completed" ? now : null,
-      archivedAt: null,
+      completedAt: issue.completedAt
+        ? toIsoTimestamp(issue.completedAt)
+        : status === "completed"
+          ? now
+          : null,
+      archivedAt: issue.archivedAt ? toIsoTimestamp(issue.archivedAt) : null,
     },
     { now },
   );

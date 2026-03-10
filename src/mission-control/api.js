@@ -64,6 +64,10 @@ function normalizeMissionControlState(publicState = {}) {
     masterCards,
     projects,
     lanes,
+    notifications: publicState.notifications || {
+      status: "ok",
+      stats: { queued: 0, retrying: 0, deadLetters: 0 },
+    },
     runtime: publicState.runtime || {
       provider: "symphony",
       updatedAt: null,
@@ -110,6 +114,7 @@ function buildBoardPayload(publicState, now = Date.now) {
       assigneeCount: uniqueCount(cards.map((card) => card.assignee?.email || card.assignee?.name)),
     },
     sync: buildSyncPayload(state, now).sync,
+    notifications: state.notifications,
   };
 }
 
@@ -290,6 +295,15 @@ function buildHealthPayload(publicState, now = Date.now) {
   } else if (sync.status === "error") {
     status = "error";
     summary = sync.lastError || "Mission Control sync is reporting an error.";
+  } else if ((state.notifications?.stats?.deadLetters || 0) > 0) {
+    status = "error";
+    summary = `Discord delivery dead-lettered ${state.notifications.stats.deadLetters} notification(s).`;
+  } else if (
+    (state.notifications?.stats?.retrying || 0) > 0 ||
+    (state.notifications?.stats?.queued || 0) > 0
+  ) {
+    status = "degraded";
+    summary = state.notifications.summary || "Discord delivery is retrying.";
   } else if (degradedProjects > 0) {
     status = "degraded";
     summary = `Symphony runtime is degraded for ${degradedProjects} configured project(s).`;
@@ -353,6 +367,7 @@ function buildSyncPayload(publicState, now = Date.now) {
       ...state.sync,
       lag,
     },
+    notifications: state.notifications,
     stats: state.stats,
   };
 }
@@ -372,6 +387,7 @@ function buildAdminStatusPayload(publicState, meta = {}, now = Date.now) {
     },
     stats: state.stats,
     sync: buildSyncPayload(state, now).sync,
+    notifications: state.notifications,
     health: buildHealthPayload(state, now).health,
   };
 }

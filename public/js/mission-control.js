@@ -531,6 +531,7 @@
         project.symphony?.status === "unreachable" || project.symphony?.status === "degraded",
     );
     const lag = state.admin.sync?.lag || {};
+    const notificationState = state.admin.notifications || state.board.notifications || null;
 
     const entries = [];
 
@@ -560,6 +561,22 @@
         severity: "warning",
         title: "Discord delivery failure",
         summary: `${discordAlert.identifier || discordAlert.primaryLinearIdentifier || discordAlert.id} reported ${discordAlert.alertState.join(", ")}.`,
+        pill: "discord",
+      });
+    }
+
+    if (notificationState?.alertBanner) {
+      entries.unshift({
+        severity:
+          notificationState.alertBanner.level === "error"
+            ? "critical"
+            : notificationState.alertBanner.level === "warning"
+              ? "warning"
+              : "info",
+        title: notificationState.alertBanner.title || "Discord delivery warning",
+        summary: [notificationState.alertBanner.message, notificationState.alertBanner.detail]
+          .filter(Boolean)
+          .join(" · "),
         pill: "discord",
       });
     }
@@ -617,6 +634,9 @@
     const lagLabel = formatDuration(
       state.admin?.sync?.lag?.milliseconds ?? state.board.sync?.lagMs ?? 0,
     );
+    const notificationState = state.admin?.notifications || state.board.notifications || {};
+    const pendingNotifications =
+      (notificationState.stats?.queued || 0) + (notificationState.stats?.retrying || 0);
     const cardsData = [
       {
         label: "Visible cards",
@@ -647,6 +667,16 @@
         label: "Sync lag",
         value: lagLabel,
         help: state.admin?.sync?.lastReason || state.board.sync?.lastReason || "steady",
+      },
+      {
+        label: "Discord queue",
+        value: pendingNotifications,
+        help: notificationState.summary || "No pending deliveries",
+      },
+      {
+        label: "Dead letters",
+        value: notificationState.stats?.deadLetters || 0,
+        help: `${notificationState.stats?.totalConfigured || 0} destinations configured`,
       },
     ];
 

@@ -9,6 +9,10 @@ const { createLinearSyncEngine } = require("./linear");
 const { createSymphonyHealthProvider } = require("./health-provider");
 const { deriveMissionCardSignals, deriveProjectSignals } = require("./signals");
 const { cardMatchesSavedView, createMissionControlViewsStore } = require("./views");
+const {
+  createMissionControlNotificationService,
+  deriveCardNotificationPolicy,
+} = require("./notifications");
 
 const RUNBOOKS = Object.freeze([
   {
@@ -283,11 +287,16 @@ function buildMissionControlPublicState({
       runtimeBySlug.get(project.linearProjectSlug) ||
       createDefaultRuntimeProject(project);
 
-    return mapLinearCardToMissionCard(linearCard, {
+    const card = mapLinearCardToMissionCard(linearCard, {
       project,
       runtimeProject,
       now,
     });
+
+    return {
+      ...card,
+      notificationPolicy: deriveCardNotificationPolicy({ card, registry }),
+    };
   });
 
   const projectMap = new Map();
@@ -532,6 +541,7 @@ function createMissionControlService({
   logger = console,
   now = Date.now,
   linearClient,
+  discordFetchImpl,
   onStateChange,
   setIntervalFn,
   clearIntervalFn,
@@ -560,6 +570,7 @@ function createMissionControlService({
 
   let linearSync;
   let symphonyHealth;
+  let notificationService;
 
   function buildBoardState() {
     return buildMissionControlPublicState({
@@ -613,6 +624,15 @@ function createMissionControlService({
         projectCount: registry.projectCount,
         projects: registry.projects,
         agents: registry.agents,
+        discordDestinations: registry.discordDestinations,
+      },
+      notifications: notificationService?.getPublicState() || {
+        status: "ok",
+        summary: "Discord notifications are healthy.",
+        stats: { queued: 0, retrying: 0, delivered: 0, deadLetters: 0, totalConfigured: 0 },
+        destinations: [],
+        alertBanner: null,
+        recentDeliveries: [],
       },
       stats: {
         ...boardState.stats,
@@ -629,6 +649,9 @@ function createMissionControlService({
   }
 
   function emitStateChange(change) {
+    const publicState = getPublicState();
+    notificationService?.handleMissionControlChange(change, publicState);
+
     if (typeof onStateChange === "function") {
       onStateChange({
         ...change,
@@ -636,6 +659,17 @@ function createMissionControlService({
       });
     }
   }
+
+  notificationService = createMissionControlNotificationService({
+    registry,
+    dataDir,
+    now,
+    logger,
+    fetchImpl: discordFetchImpl,
+    onChange: emitStateChange,
+    setTimeoutFn,
+    clearTimeoutFn,
+  });
 
   linearSync = createLinearSyncEngine({
     config: config.integrations?.linear || {},
