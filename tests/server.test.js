@@ -96,6 +96,38 @@ function httpRequest(url, { method = "GET", headers = {}, body = null } = {}) {
   });
 }
 
+async function waitForServer(port, headers = {}) {
+  const maxWait = 10000;
+  const start = Date.now();
+
+  while (Date.now() - start < maxWait) {
+    try {
+      await httpRequest(`http://127.0.0.1:${port}/api/health`, { headers });
+      return;
+    } catch (_error) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+
+  throw new Error(`Timed out waiting for server on port ${port}`);
+}
+
+function startServer({ port, tempHome, workspaceDir, extraEnv = {} }) {
+  return spawn(process.execPath, [path.join(__dirname, "..", "lib", "server.js")], {
+    env: {
+      ...process.env,
+      HOME: tempHome,
+      OPENCLAW_WORKSPACE: workspaceDir,
+      PORT: String(port),
+      HOST: "127.0.0.1",
+      LINEAR_PROJECT_SLUGS: "mission-control",
+      LINEAR_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      ...extraEnv,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
 function parseSseFrame(frame) {
   const event = { event: "message", data: "" };
 
@@ -111,9 +143,9 @@ function parseSseFrame(frame) {
   return event;
 }
 
-function waitForMissionControlEvent(port, predicate, trigger) {
+function waitForMissionControlEvent(port, predicate, trigger, { headers = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const request = http.get(`http://127.0.0.1:${port}/api/events`, (res) => {
+    const request = http.request(`http://127.0.0.1:${port}/api/events`, { headers }, (res) => {
       res.setEncoding("utf8");
       let buffer = "";
       let triggered = false;
@@ -164,6 +196,7 @@ function waitForMissionControlEvent(port, predicate, trigger) {
     });
 
     request.on("error", reject);
+    request.end();
   });
 }
 
@@ -196,30 +229,8 @@ describeServer("server", () => {
     fs.mkdirSync(path.join(workspaceDir, "memory"), { recursive: true });
     fs.mkdirSync(path.join(workspaceDir, "state"), { recursive: true });
 
-    serverProcess = spawn(process.execPath, [path.join(__dirname, "..", "lib", "server.js")], {
-      env: {
-        ...process.env,
-        HOME: tempHome,
-        OPENCLAW_WORKSPACE: workspaceDir,
-        PORT: String(TEST_PORT),
-        HOST: "127.0.0.1",
-        LINEAR_PROJECT_SLUGS: "mission-control",
-        LINEAR_WEBHOOK_SECRET: WEBHOOK_SECRET,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    const maxWait = 10000;
-    const start = Date.now();
-
-    while (Date.now() - start < maxWait) {
-      try {
-        await httpRequest(`http://127.0.0.1:${TEST_PORT}/api/health`);
-        break;
-      } catch (_error) {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
-    }
+    serverProcess = startServer({ port: TEST_PORT, tempHome, workspaceDir });
+    await waitForServer(TEST_PORT);
 
     const webhookResult = await postWebhook(TEST_PORT, createIssue(), "delivery-seed");
     assert.strictEqual(webhookResult.statusCode, 202);
@@ -322,5 +333,89 @@ describeServer("server", () => {
   it("serves static files for root path", async () => {
     const { statusCode } = await httpRequest(`http://127.0.0.1:${TEST_PORT}/`);
     assert.ok(statusCode >= 200 && statusCode < 500);
+  });
+});
+
+describeServer("server auth posture for Mission Control", () => {
+  const TEST_PORT = 10000 + Math.floor(Math.random() * 50000);
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-server-auth-"));
+  const workspaceDir = path.join(tempHome, ".openclaw", "workspace");
+  const authHeaders = { authorization: "Bearer mission-control-token" };
+  let serverProcess;
+
+  before(async () => {
+    fs.mkdirSync(path.join(workspaceDir, "memory"), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, "state"), { recursive: true });
+
+    serverProcess = startServer({
+      port: TEST_PORT,
+      tempHome,
+      workspaceDir,
+      extraEnv: {
+        DASHBOARD_AUTH_MODE: "token",
+        DASHBOARD_AUTH_TOKEN: "mission-control-token",
+      },
+    });
+    await waitForServer(TEST_PORT, authHeaders);
+
+    const webhookResult = await postWebhook(TEST_PORT, createIssue(), "delivery-auth-seed");
+    assert.strictEqual(webhookResult.statusCode, 202);
+  });
+
+  after(() => {
+    if (serverProcess) {
+      serverProcess.kill("SIGTERM");
+      serverProcess = null;
+    }
+  });
+
+  it("preserves the standard localhost trust posture for Mission Control endpoints in token mode", async () => {
+    const [boardRes, syncRes, adminRes, reconcileRes, whoamiRes] = await Promise.all([
+      httpRequest(`http://127.0.0.1:${TEST_PORT}/api/mission-control/board`),
+      httpRequest(`http://127.0.0.1:${TEST_PORT}/api/mission-control/sync`),
+      httpRequest(`http://127.0.0.1:${TEST_PORT}/api/mission-control/admin/status`),
+      httpRequest(`http://127.0.0.1:${TEST_PORT}/api/mission-control/admin/reconcile`, {
+        method: "POST",
+      }),
+      httpRequest(`http://127.0.0.1:${TEST_PORT}/api/whoami`),
+    ]);
+
+    const board = JSON.parse(boardRes.body);
+    const admin = JSON.parse(adminRes.body);
+    const reconcile = JSON.parse(reconcileRes.body);
+    const whoami = JSON.parse(whoamiRes.body);
+
+    assert.strictEqual(boardRes.statusCode, 200);
+    assert.strictEqual(board.masterCards[0].identifier, "ARC-26");
+    assert.strictEqual(syncRes.statusCode, 200);
+    assert.strictEqual(adminRes.statusCode, 200);
+    assert.strictEqual(typeof admin.sync.status, "string");
+    assert.strictEqual(reconcileRes.statusCode, 200);
+    assert.strictEqual(reconcile.ok, true);
+    assert.strictEqual(whoamiRes.statusCode, 200);
+    assert.strictEqual(whoami.authMode, "token");
+    assert.strictEqual(whoami.user, null);
+  });
+
+  it("continues streaming Mission Control deltas over SSE while token auth is enabled", async () => {
+    const updatedIssue = createIssue({
+      updatedAt: "2026-03-10T00:12:00.000Z",
+      state: {
+        id: "state-review",
+        name: "In Review",
+        type: "started",
+        color: "#66ccff",
+      },
+    });
+
+    const payload = await waitForMissionControlEvent(
+      TEST_PORT,
+      (event) => event.type === "card-upserted" && event.delta?.identifier === "ARC-26",
+      () => postWebhook(TEST_PORT, updatedIssue, "delivery-auth-update"),
+      { headers: authHeaders },
+    );
+
+    assert.strictEqual(payload.type, "card-upserted");
+    assert.strictEqual(payload.delta.card.state.name, "In Review");
   });
 });
