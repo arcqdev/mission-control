@@ -27,8 +27,12 @@ Response shape:
 
 - `filters.projects`
 - `filters.teams`
+- `filters.lanes`
 - `filters.states`
 - `filters.assignees`
+- `filters.responsibleAgents`
+- `filters.risks`
+- `filters.dispatch`
 - `filters.labels`
 - `filters.priorities`
 - `filters.estimates`

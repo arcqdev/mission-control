@@ -6,6 +6,8 @@ const {
 } = require("./models");
 const { buildProjectRegistryIndexes, loadMissionControlRegistry } = require("./registry");
 const { createLinearSyncEngine } = require("./linear");
+const { createSymphonyHealthProvider } = require("./health-provider");
+const { deriveMissionCardSignals, deriveProjectSignals } = require("./signals");
 const { cardMatchesSavedView, createMissionControlViewsStore } = require("./views");
 
 const RUNBOOKS = Object.freeze([
@@ -60,55 +62,328 @@ function getQueueThresholdMs(status) {
 
 function createFallbackProject(linearCard) {
   const labelNames = getLabelNames(linearCard.labels);
-  const laneFromLabels = normalizeLane(labelNames.find((label) => label.startsWith("lane:")), null);
+  const laneFromLabels = normalizeLane(
+    labelNames.find((label) => label.startsWith("lane:")),
+    null,
+  );
 
   return {
     key: linearCard.project?.slug || linearCard.project?.id || "unmapped",
+    label: linearCard.project?.name || linearCard.project?.slug || "Unmapped project",
     repoPath: "",
     linearProjectSlug: linearCard.project?.slug || "",
     lane: laneFromLabels,
     symphonyPort: null,
+    symphony: null,
   };
 }
 
-function decorateMasterCard({ baseCard, linearCard, diagnostics, runtimeProject = null }) {
-  const signals = [];
-  const operationalRisk =
-    runtimeProject?.symphony?.status === "unreachable" || diagnostics.stale || baseCard.risk === "risk:high"
-      ? "high"
-      : "low";
+function createDefaultRuntimeProject(project) {
+  return {
+    projectKey: project.key,
+    linearProjectSlug: project.linearProjectSlug,
+    lane: project.lane,
+    symphony: project.symphony
+      ? {
+          endpoint: project.symphony.url,
+          status: "unknown",
+          reachable: false,
+          responseCode: null,
+          summary: "Probe pending",
+          checkedAt: null,
+          lastHealthyAt: null,
+          lastError: null,
+          queue: {
+            active: 0,
+            pending: 0,
+            depth: 0,
+          },
+        }
+      : null,
+  };
+}
 
-  if (runtimeProject?.symphony?.status === "unreachable") {
-    signals.push("symphony-down");
+function buildRuntimeIndexes(runtimeState = {}) {
+  const runtimeProjects = Array.isArray(runtimeState.projects) ? runtimeState.projects : [];
+  const runtimeByKey = new Map();
+  const runtimeBySlug = new Map();
+
+  for (const project of runtimeProjects) {
+    if (project?.projectKey) {
+      runtimeByKey.set(project.projectKey, project);
+    }
+    if (project?.linearProjectSlug) {
+      runtimeBySlug.set(project.linearProjectSlug, project);
+    }
   }
-  if (diagnostics.stale) {
-    signals.push("stale-work");
-  }
-  if (baseCard.risk === "risk:high") {
-    signals.push("high-risk");
-  }
+
+  return { runtimeByKey, runtimeBySlug };
+}
+
+function mapLinearCardToMissionCard(linearCard, { project, runtimeProject, now }) {
+  const missionCard = createMasterCardFromLinearIssue(
+    {
+      issue: linearCard,
+      project,
+    },
+    { now: linearCard.updatedAt || now() },
+  );
+  const healthStrip = deriveMissionCardSignals({
+    card: linearCard,
+    project,
+    runtimeProject,
+    now,
+  });
 
   return {
-    ...baseCard,
-    identifier: baseCard.primaryLinearIdentifier,
-    description: linearCard.description || "",
+    ...missionCard,
+    identifier: linearCard.identifier || missionCard.primaryLinearIdentifier,
     url: linearCard.url || null,
     priority: linearCard.priority ?? null,
     estimate: linearCard.estimate ?? null,
+    createdAt: linearCard.createdAt || missionCard.createdAt,
+    updatedAt: linearCard.updatedAt || missionCard.updatedAt,
+    startedAt: linearCard.startedAt || null,
+    completedAt: linearCard.completedAt || missionCard.completedAt,
+    canceledAt: linearCard.canceledAt || null,
+    archivedAt: linearCard.archivedAt || missionCard.archivedAt,
     state: linearCard.state || null,
-    project: linearCard.project || null,
+    project:
+      linearCard.project ||
+      (project
+        ? {
+            id: null,
+            name: project.label || project.key,
+            slug: project.linearProjectSlug || null,
+            progress: null,
+          }
+        : null),
     team: linearCard.team || null,
     assignee: linearCard.assignee || null,
-    labels: linearCard.labels || [],
+    labels: Array.isArray(linearCard.labels) ? linearCard.labels : [],
     cycle: linearCard.cycle || null,
-    healthStrip: {
-      stale: diagnostics.stale,
-      risk: operationalRisk,
-      status:
-        runtimeProject?.symphony?.status === "unreachable" || diagnostics.stale ? "degraded" : "healthy",
-      signals,
+    projectKey: project?.key || missionCard.originProjects[0] || null,
+    latestUpdate:
+      missionCard.latestUpdate ||
+      (linearCard.updatedAt
+        ? {
+            summary: linearCard.state?.name
+              ? `Linear updated · ${linearCard.state.name}`
+              : "Linear updated",
+            actor: linearCard.assignee?.name || null,
+            source: "linear",
+            capturedAt: linearCard.updatedAt,
+          }
+        : null),
+    healthStrip,
+  };
+}
+
+function buildLaneSummaries(projects, cards) {
+  const laneMap = new Map();
+
+  for (const card of cards) {
+    if (!card.lane) {
+      continue;
+    }
+
+    const entry = laneMap.get(card.lane) || {
+      lane: card.lane,
+      cardCount: 0,
+      projectCount: 0,
+      staleCardCount: 0,
+      highRiskCardCount: 0,
+      blockedCardCount: 0,
+      degradedProjectCount: 0,
+      status: "ok",
+      risk: "low",
+    };
+
+    entry.cardCount += 1;
+    if (card.healthStrip?.stale) {
+      entry.staleCardCount += 1;
+    }
+    if (card.healthStrip?.blocked) {
+      entry.blockedCardCount += 1;
+    }
+    if (card.healthStrip?.risk === "high") {
+      entry.highRiskCardCount += 1;
+    }
+
+    laneMap.set(card.lane, entry);
+  }
+
+  for (const project of projects) {
+    if (!project.lane) {
+      continue;
+    }
+
+    const entry = laneMap.get(project.lane) || {
+      lane: project.lane,
+      cardCount: 0,
+      projectCount: 0,
+      staleCardCount: 0,
+      highRiskCardCount: 0,
+      blockedCardCount: 0,
+      degradedProjectCount: 0,
+      status: "ok",
+      risk: "low",
+    };
+
+    entry.projectCount += 1;
+    if (project.healthStrip?.degraded) {
+      entry.degradedProjectCount += 1;
+    }
+    laneMap.set(project.lane, entry);
+  }
+
+  return Array.from(laneMap.values())
+    .map((lane) => {
+      let status = "ok";
+      if (lane.degradedProjectCount > 0) {
+        status = "degraded";
+      } else if (lane.blockedCardCount > 0) {
+        status = "blocked";
+      } else if (lane.staleCardCount > 0) {
+        status = "stale";
+      }
+
+      let risk = "low";
+      if (lane.degradedProjectCount > 0 || lane.highRiskCardCount > 0) {
+        risk = "high";
+      } else if (lane.blockedCardCount > 0 || lane.staleCardCount > 0) {
+        risk = "medium";
+      }
+
+      return {
+        ...lane,
+        status,
+        risk,
+      };
+    })
+    .sort((left, right) => left.lane.localeCompare(right.lane));
+}
+
+function buildMissionControlPublicState({
+  linearState = {},
+  registry = { projects: [], agents: [], discordDestinations: [] },
+  runtimeState = { updatedAt: null, projects: [] },
+  now = Date.now,
+} = {}) {
+  const linearCards = Array.isArray(linearState.masterCards) ? linearState.masterCards : [];
+  const projectIndexes = buildProjectRegistryIndexes(registry);
+  const { runtimeByKey, runtimeBySlug } = buildRuntimeIndexes(runtimeState);
+
+  const masterCards = linearCards.map((linearCard) => {
+    const project =
+      projectIndexes.projectByLinearSlug.get(linearCard.project?.slug) ||
+      createFallbackProject(linearCard);
+    const runtimeProject =
+      runtimeByKey.get(project.key) ||
+      runtimeBySlug.get(project.linearProjectSlug) ||
+      createDefaultRuntimeProject(project);
+
+    return mapLinearCardToMissionCard(linearCard, {
+      project,
+      runtimeProject,
+      now,
+    });
+  });
+
+  const projectMap = new Map();
+  for (const project of registry.projects || []) {
+    projectMap.set(project.key, project);
+  }
+  for (const card of masterCards) {
+    if (!card.projectKey || projectMap.has(card.projectKey)) {
+      continue;
+    }
+    projectMap.set(
+      card.projectKey,
+      createFallbackProject({
+        project: card.project,
+        labels: card.labels,
+      }),
+    );
+  }
+
+  const projects = Array.from(projectMap.values())
+    .map((project) => {
+      const projectCards = masterCards.filter((card) => card.projectKey === project.key);
+      const runtimeProject =
+        runtimeByKey.get(project.key) ||
+        runtimeBySlug.get(project.linearProjectSlug) ||
+        createDefaultRuntimeProject(project);
+      const healthStrip = deriveProjectSignals({
+        project,
+        cards: projectCards,
+        runtimeProject,
+      });
+
+      return {
+        key: project.key,
+        label: project.label || project.key,
+        repoPath: project.repoPath || "",
+        linearProjectSlug: project.linearProjectSlug || null,
+        lane: project.lane || null,
+        cardCount: projectCards.length,
+        symphony: runtimeProject?.symphony || null,
+        healthStrip,
+      };
+    })
+    .sort((left, right) => (left.label || left.key).localeCompare(right.label || right.key));
+
+  const lanes = buildLaneSummaries(projects, masterCards);
+  const updatedAtCandidates = [
+    linearState.sync?.lastSuccessfulAt,
+    runtimeState.updatedAt,
+    masterCards[0]?.updatedAt,
+  ].filter(Boolean);
+  const updatedAt = updatedAtCandidates[0] || null;
+  const degradedProjectCount = projects.filter((project) => project.healthStrip?.degraded).length;
+  const staleCards = masterCards.filter((card) => card.healthStrip?.stale).length;
+  const highRiskCards = masterCards.filter((card) => card.healthStrip?.risk === "high").length;
+
+  return {
+    updatedAt,
+    masterCards,
+    projects,
+    lanes,
+    runtime: {
+      provider: "symphony",
+      updatedAt: runtimeState.updatedAt || null,
+      projectCount: projects.length,
+      degradedProjectCount,
     },
-    diagnostics,
+    stats: {
+      totalCards: masterCards.length,
+      eventCount: Number(linearState.stats?.eventCount || 0),
+      staleCards,
+      highRiskCards,
+      projectCount: projects.length,
+      laneCount: lanes.length,
+    },
+    sync: linearState.sync || {
+      status: "idle",
+      mode: "hybrid",
+      pollIntervalMs: 120000,
+      projectSlugs: [],
+      cursor: { updatedAfter: null },
+      lastAttemptedAt: null,
+      lastSuccessfulAt: null,
+      lastWebhookAt: null,
+      lastError: null,
+      lastReason: null,
+      lastFetchedCount: 0,
+      lastChangedCount: 0,
+      lagMs: null,
+      webhook: {
+        enabled: false,
+        path: null,
+        lastDeliveryId: null,
+        recentDeliveryIds: [],
+      },
+    },
   };
 }
 
@@ -186,22 +461,31 @@ function buildCardDiagnostics({ card, sync, timeline, nowMs }) {
     recommendedAction = "Verify disk permissions/space and trigger a manual reconcile.";
   } else if (
     lastWebhookEvent &&
-    (!lastPollEvent || Date.parse(lastPollEvent.occurredAt) < Date.parse(lastWebhookEvent.occurredAt))
+    (!lastPollEvent ||
+      Date.parse(lastPollEvent.occurredAt) < Date.parse(lastWebhookEvent.occurredAt))
   ) {
     divergenceSource = "webhook";
     signals.push("Webhook activity has not been confirmed by a later reconcile.");
     recommendedAction = "Inspect Linear webhook delivery health, then trigger reconcile.";
   } else if (
     sync.status === "error" ||
-    (Number.isFinite(sync.lagMs) && Number.isFinite(sync.pollIntervalMs) && sync.lagMs > sync.pollIntervalMs * 2)
+    (Number.isFinite(sync.lagMs) &&
+      Number.isFinite(sync.pollIntervalMs) &&
+      sync.lagMs > sync.pollIntervalMs * 2)
   ) {
     divergenceSource = "poll";
-    signals.push(sync.status === "error" ? `Poller error: ${sync.lastError}` : "Poller lag exceeds two sync intervals.");
+    signals.push(
+      sync.status === "error"
+        ? `Poller error: ${sync.lastError}`
+        : "Poller lag exceeds two sync intervals.",
+    );
     recommendedAction = "Check Linear API reachability/credentials and trigger reconcile.";
   }
 
   if (stale) {
-    signals.push(`Queue age ${formatDuration(queueAgeMs)} exceeds ${formatDuration(staleThresholdMs)}.`);
+    signals.push(
+      `Queue age ${formatDuration(queueAgeMs)} exceeds ${formatDuration(staleThresholdMs)}.`,
+    );
   }
 
   return {
@@ -213,6 +497,32 @@ function buildCardDiagnostics({ card, sync, timeline, nowMs }) {
     divergenceSource,
     signals,
     recommendedAction,
+  };
+}
+
+function buildDiagnostics(cards, syncStatus) {
+  const bySource = { poll: 0, webhook: 0, state_write: 0 };
+  let staleCards = 0;
+
+  for (const card of cards) {
+    if (card.diagnostics?.stale || card.healthStrip?.stale) {
+      staleCards += 1;
+    }
+    if (card.diagnostics?.divergenceSource) {
+      bySource[card.diagnostics.divergenceSource] += 1;
+    }
+  }
+
+  return {
+    syncStatus,
+    staleCards,
+    divergenceBySource: bySource,
+    affectedCards: cards.filter(
+      (card) =>
+        card.healthStrip?.stale ||
+        card.healthStrip?.status === "degraded" ||
+        card.diagnostics?.divergenceSource,
+    ),
   };
 }
 
@@ -248,58 +558,112 @@ function createMissionControlService({
     };
   }
 
-  const projectIndexes = buildProjectRegistryIndexes(registry);
-  const linearSync = createLinearSyncEngine({
+  let linearSync;
+  let symphonyHealth;
+
+  function buildBoardState() {
+    return buildMissionControlPublicState({
+      linearState: linearSync.getPublicState(),
+      registry,
+      runtimeState: symphonyHealth.getState(),
+      now,
+    });
+  }
+
+  function buildCardsWithDiagnostics(boardState) {
+    const nowMs = now();
+    return boardState.masterCards.map((card) => {
+      const timeline = linearSync.getTimelineForCard({
+        cardId: card.id,
+        issueId: card.primaryLinearIssueId,
+        identifier: card.primaryLinearIdentifier,
+      });
+
+      return {
+        ...card,
+        diagnostics: buildCardDiagnostics({
+          card,
+          sync: boardState.sync,
+          timeline,
+          nowMs,
+        }),
+      };
+    });
+  }
+
+  function getSavedViews() {
+    return viewsStore.getState();
+  }
+
+  function getPublicState() {
+    const boardState = buildBoardState();
+    const masterCards = buildCardsWithDiagnostics(boardState);
+    const savedViews = getSavedViews();
+    const activeView = savedViews.views.find((view) => view.id === savedViews.activeViewId) || null;
+    const activeCards = activeView
+      ? masterCards.filter((card) => cardMatchesSavedView(card, activeView.filters, now()))
+      : masterCards;
+    const diagnostics = buildDiagnostics(masterCards, boardState.sync.status);
+
+    return {
+      ...boardState,
+      ready: registryError === null,
+      registryError: registryError ? registryError.message : null,
+      registry: {
+        projectCount: registry.projectCount,
+        projects: registry.projects,
+        agents: registry.agents,
+      },
+      stats: {
+        ...boardState.stats,
+        activeCards: activeCards.length,
+        needsReview: masterCards.filter((card) => card.humanReviewRequired).length,
+      },
+      savedViews,
+      activeView,
+      masterCards,
+      activeCards,
+      diagnostics,
+      runbooks: RUNBOOKS,
+    };
+  }
+
+  function emitStateChange(change) {
+    if (typeof onStateChange === "function") {
+      onStateChange({
+        ...change,
+        publicState: getPublicState(),
+      });
+    }
+  }
+
+  linearSync = createLinearSyncEngine({
     config: config.integrations?.linear || {},
     dataDir,
-    registry,
     logger,
     now,
     client: linearClient,
-    onStateChange,
+    onStateChange: emitStateChange,
     setIntervalFn,
     clearIntervalFn,
     setTimeoutFn,
     clearTimeoutFn,
   });
+
   const viewsStore = createMissionControlViewsStore({ dataDir, now });
-
-  function buildMasterCards() {
-    const linearState = linearSync.getPublicState();
-    const nowMs = now();
-
-    return linearState.masterCards.map((linearCard) => {
-      const project =
-        projectIndexes.projectByLinearSlug.get(linearCard.project?.slug) || createFallbackProject(linearCard);
-      const baseCard = createMasterCardFromLinearIssue(
-        {
-          issue: linearCard,
-          project,
-        },
-        { now: linearCard.updatedAt || nowMs },
-      );
-      const timeline = linearSync.getTimelineForCard({
-        cardId: baseCard.id,
-        issueId: baseCard.primaryLinearIssueId,
-        identifier: baseCard.primaryLinearIdentifier,
-      });
-      const diagnostics = buildCardDiagnostics({
-        card: baseCard,
-        sync: linearState.sync,
-        timeline,
-        nowMs,
-      });
-
-      return decorateMasterCard({
-        baseCard,
-        linearCard,
-        diagnostics,
-      });
-    });
-  }
+  symphonyHealth = createSymphonyHealthProvider({
+    registry,
+    dataDir,
+    now,
+    logger,
+    pollIntervalMs: config.missionControl?.symphonyPollIntervalMs || 30000,
+    setIntervalFn,
+    clearIntervalFn,
+    onChange: emitStateChange,
+  });
 
   function findCardReference(cardRef) {
-    const cards = buildMasterCards();
+    const cards = getPublicState().masterCards;
     const match = cards.find(
       (card) =>
         card.id === cardRef ||
@@ -339,76 +703,23 @@ function createMissionControlService({
   }
 
   function getDiagnostics() {
-    const linearState = linearSync.getPublicState();
-    const cards = buildMasterCards();
-    const bySource = { poll: 0, webhook: 0, state_write: 0 };
-    let staleCards = 0;
-
-    for (const card of cards) {
-      if (card.diagnostics.stale) {
-        staleCards += 1;
-      }
-      if (card.diagnostics.divergenceSource) {
-        bySource[card.diagnostics.divergenceSource] += 1;
-      }
-    }
-
-    return {
-      syncStatus: linearState.sync.status,
-      staleCards,
-      divergenceBySource: bySource,
-      affectedCards: cards.filter(
-        (card) => card.diagnostics.stale || card.diagnostics.divergenceSource,
-      ),
-    };
-  }
-
-  function getSavedViews() {
-    return viewsStore.getState();
-  }
-
-  function getPublicState() {
-    const linearState = linearSync.getPublicState();
-    const masterCards = buildMasterCards();
-    const diagnostics = getDiagnostics();
-    const savedViews = getSavedViews();
-    const activeView = savedViews.views.find((view) => view.id === savedViews.activeViewId) || null;
-    const activeCards = activeView
-      ? masterCards.filter((card) => cardMatchesSavedView(card, activeView.filters, now()))
-      : masterCards;
-
-    return {
-      ready: registryError === null,
-      registryError: registryError ? registryError.message : null,
-      registry: {
-        projectCount: registry.projectCount,
-        projects: registry.projects,
-        agents: registry.agents,
-      },
-      sync: linearState.sync,
-      stats: {
-        totalCards: masterCards.length,
-        activeCards: activeCards.length,
-        eventCount: linearState.stats.eventCount,
-        staleCards: diagnostics.staleCards,
-        needsReview: masterCards.filter((card) => card.humanReviewRequired).length,
-      },
-      savedViews,
-      activeView,
-      masterCards,
-      activeCards,
-      diagnostics,
-      runbooks: RUNBOOKS,
-    };
+    return getPublicState().diagnostics;
   }
 
   return {
     start: () => {
       linearSync.bootstrap();
-      linearSync.start();
+      symphonyHealth.start();
+      return linearSync.start();
     },
-    stop: () => linearSync.stop(),
-    reconcile: (options) => linearSync.reconcile(options),
+    stop: () => {
+      symphonyHealth.stop();
+      return linearSync.stop();
+    },
+    reconcile: async (options) => {
+      const result = await linearSync.reconcile(options);
+      return result;
+    },
     handleWebhook: (input) => linearSync.handleWebhook(input),
     getWebhookPath: () => linearSync.getWebhookPath(),
     getSavedViews,
@@ -417,110 +728,6 @@ function createMissionControlService({
     getCardTimeline,
     replayCardTimeline,
     setActiveView: (viewId) => viewsStore.setActiveView(viewId),
-  };
-}
-
-function buildMissionControlPublicState({
-  linearState,
-  registry,
-  runtimeState = { projects: [], updatedAt: null },
-  now = Date.now,
-}) {
-  const projectIndexes = buildProjectRegistryIndexes(registry);
-  const nowMs = typeof now === "function" ? now() : now;
-  const runtimeProjects = Array.isArray(runtimeState.projects) ? runtimeState.projects : [];
-
-  const masterCards = (linearState.masterCards || []).map((linearCard) => {
-    const project =
-      projectIndexes.projectByLinearSlug.get(linearCard.project?.slug) || createFallbackProject(linearCard);
-    const baseCard = createMasterCardFromLinearIssue(
-      {
-        issue: linearCard,
-        project,
-      },
-      { now: linearCard.updatedAt || nowMs },
-    );
-    const runtimeProject = runtimeProjects.find(
-      (entry) =>
-        entry.projectKey === project.key || entry.linearProjectSlug === project.linearProjectSlug,
-    );
-    const diagnostics = buildCardDiagnostics({
-      card: baseCard,
-      sync: linearState.sync || {},
-      timeline: [],
-      nowMs,
-    });
-
-    return decorateMasterCard({
-      baseCard,
-      linearCard,
-      diagnostics,
-      runtimeProject,
-    });
-  });
-
-  const projects = (registry.projects || []).map((project) => {
-    const projectCards = masterCards.filter(
-      (card) =>
-        card.originProjects.includes(project.key) || card.project?.slug === project.linearProjectSlug,
-    );
-    const runtimeProject = runtimeProjects.find(
-      (entry) =>
-        entry.projectKey === project.key || entry.linearProjectSlug === project.linearProjectSlug,
-    );
-    const degraded =
-      runtimeProject?.symphony?.status === "unreachable" || projectCards.some((card) => card.healthStrip.stale);
-    const signals = [];
-    if (runtimeProject?.symphony?.status === "unreachable") {
-      signals.push("symphony-down");
-    }
-    if (projectCards.some((card) => card.healthStrip.stale)) {
-      signals.push("stale-work");
-    }
-
-    return {
-      projectKey: project.key,
-      linearProjectSlug: project.linearProjectSlug,
-      lane: project.lane,
-      symphony: runtimeProject?.symphony || {
-        endpoint: project.symphony?.endpoint || project.symphony?.url || null,
-        status: project.symphony ? "unknown" : "unconfigured",
-        reachable: false,
-        summary: project.symphony ? "Probe pending" : "Symphony runtime not configured",
-        queue: { active: 0, pending: 0, depth: 0 },
-      },
-      healthStrip: {
-        status: degraded ? "degraded" : "healthy",
-        highRiskCardCount: projectCards.filter((card) => card.healthStrip.risk === "high").length,
-        staleCardCount: projectCards.filter((card) => card.healthStrip.stale).length,
-        signals,
-      },
-    };
-  });
-
-  const lanes = [...new Set((registry.projects || []).map((project) => project.lane).filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right))
-    .map((lane) => {
-      const laneCards = masterCards.filter((card) => card.lane === lane);
-      return {
-        lane,
-        cardCount: laneCards.length,
-        highRiskCardCount: laneCards.filter((card) => card.healthStrip.risk === "high").length,
-        staleCardCount: laneCards.filter((card) => card.healthStrip.stale).length,
-      };
-    });
-
-  return {
-    updatedAt: runtimeState.updatedAt || linearState.sync?.lastSuccessfulAt || null,
-    registry,
-    sync: linearState.sync,
-    stats: {
-      totalCards: masterCards.length,
-      eventCount: Number(linearState.stats?.eventCount || 0),
-    },
-    masterCards,
-    projects,
-    lanes,
   };
 }
 

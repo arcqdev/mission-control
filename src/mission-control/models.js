@@ -1,8 +1,9 @@
 const os = require("os");
 const path = require("path");
 
-const MISSION_CONTROL_SCHEMA_VERSION = 1;
 const HOME = os.homedir();
+
+const MISSION_CONTROL_SCHEMA_VERSION = 1;
 
 const VALID_LANES = new Set(["lane:jon", "lane:mia", "lane:pepper"]);
 const VALID_RISKS = new Set(["risk:low", "risk:high"]);
@@ -173,10 +174,6 @@ function extractRiskFromLabels(labelNames, fallback = "risk:low") {
 }
 
 function extractDispatchFromLabels(labelNames, fallback = null) {
-  if (labelNames.includes("blocker") || labelNames.includes("blocked")) {
-    return "dispatch:blocked";
-  }
-
   return normalizeDispatch(
     labelNames.find((label) => label.startsWith("dispatch:")),
     fallback,
@@ -186,12 +183,12 @@ function extractDispatchFromLabels(labelNames, fallback = null) {
 function normalizeProjectRegistryEntry(project, options = {}) {
   const now = toIsoTimestamp(options.now);
   const key = cleanString(project?.key);
+  const label = cleanString(project?.label) || key;
   const repoPath = cleanString(
     project?.repoPath || project?.path || (key === "mission-control" ? process.cwd() : ""),
   );
   const linearProjectSlug = cleanString(project?.linearProjectSlug || project?.linearSlug);
   const lane = normalizeLane(project?.lane);
-  const symphonyHealthPath = cleanString(project?.symphonyHealthPath) || "/health";
 
   if (!key) {
     throw new Error("Mission Control project registry entry is missing key");
@@ -222,21 +219,35 @@ function normalizeProjectRegistryEntry(project, options = {}) {
     symphonyPort = parsed;
   }
 
+  const symphonyProtocol = cleanString(project?.symphonyProtocol || project?.protocol) || "http";
+  const symphonyHost = cleanString(project?.symphonyHost || project?.host) || "127.0.0.1";
+  const symphonyHealthPath =
+    cleanString(project?.symphonyHealthPath || project?.healthPath) || "/health";
+  const normalizedHealthPath = symphonyHealthPath.startsWith("/")
+    ? symphonyHealthPath
+    : `/${symphonyHealthPath}`;
+  const symphony = symphonyPort
+    ? {
+        protocol: symphonyProtocol,
+        host: symphonyHost,
+        healthPath: normalizedHealthPath,
+        url: `${symphonyProtocol}://${symphonyHost}:${symphonyPort}${normalizedHealthPath}`,
+      }
+    : null;
+
   return {
     key,
+    label,
     repoPath: path.normalize(
-      repoPath.replace(/^~/, HOME).replace(/\$HOME/g, HOME).replace(/\$\{HOME\}/g, HOME),
+      repoPath
+        .replace(/^~/, HOME)
+        .replace(/\$HOME/g, HOME)
+        .replace(/\$\{HOME\}/g, HOME),
     ),
     linearProjectSlug,
     lane,
     symphonyPort,
-    symphonyHealthPath,
-    symphony: symphonyPort
-      ? {
-          url: `http://127.0.0.1:${symphonyPort}${symphonyHealthPath}`,
-          endpoint: `http://127.0.0.1:${symphonyPort}${symphonyHealthPath}`,
-        }
-      : null,
+    symphony,
     createdAt: toIsoTimestamp(project?.createdAt || now),
     updatedAt: toIsoTimestamp(project?.updatedAt || now),
   };
@@ -541,9 +552,7 @@ function createMasterCardFromLinearIssue(input, options = {}) {
   const labelNames = getLabelNames(issue.labels || issue.labelNames);
   const lane = extractLaneFromLabels(labelNames, project?.lane || null);
   const risk = extractRiskFromLabels(labelNames, "risk:low");
-  const dispatch =
-    extractDispatchFromLabels(labelNames, null) ||
-    (/blocked/.test(cleanString(issue.state?.name).toLowerCase()) ? "dispatch:blocked" : null);
+  const dispatch = extractDispatchFromLabels(labelNames, null);
   const dependencies = (issue.dependencies || []).map(normalizeDependency);
   const issueLifecycle = normalizeLinearIssueLifecycle(issue);
   const reviewState = deriveHumanReviewState({

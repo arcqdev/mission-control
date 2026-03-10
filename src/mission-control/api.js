@@ -122,12 +122,24 @@ function buildFiltersPayload(publicState, now = Date.now) {
   const stateCounts = countBy(cards, (card) => card.state?.name);
   const laneCounts = countBy(cards, (card) => card.lane);
   const assigneeCounts = countBy(cards, (card) => card.assignee?.email || card.assignee?.name);
+  const responsibleAgentCounts = new Map();
+  const riskCounts = countBy(cards, (card) => card.healthStrip?.risk || card.risk);
+  const dispatchCounts = countBy(cards, (card) => card.dispatch || "dispatch:unknown");
   const labelCounts = new Map();
   const priorityCounts = countBy(cards, (card) => String(card.priority ?? "unassigned"));
   const estimateCounts = countBy(cards, (card) => String(card.estimate ?? "unestimated"));
   const cycleCounts = countBy(cards, (card) => card.cycle?.id || card.cycle?.name);
 
   for (const card of cards) {
+    for (const agent of card.responsibleAgents || []) {
+      if (!agent) continue;
+      responsibleAgentCounts.set(agent, {
+        key: agent,
+        label: agent,
+        count: (responsibleAgentCounts.get(agent)?.count || 0) + 1,
+      });
+    }
+
     for (const label of card.labels || []) {
       const key = label.id || label.name;
       if (!key) continue;
@@ -199,6 +211,23 @@ function buildFiltersPayload(publicState, now = Date.now) {
             count,
           };
         })
+        .sort((left, right) => left.label.localeCompare(right.label)),
+      responsibleAgents: Array.from(responsibleAgentCounts.values()).sort((left, right) =>
+        left.label.localeCompare(right.label),
+      ),
+      risks: Array.from(riskCounts.entries())
+        .map(([key, count]) => ({
+          key,
+          label: key.replace(/^risk:/, ""),
+          count,
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label)),
+      dispatch: Array.from(dispatchCounts.entries())
+        .map(([key, count]) => ({
+          key,
+          label: key === "dispatch:unknown" ? "Unspecified" : key.replace(/^dispatch:/, ""),
+          count,
+        }))
         .sort((left, right) => left.label.localeCompare(right.label)),
       labels: Array.from(labelCounts.values()).sort((left, right) =>
         left.label.localeCompare(right.label),
@@ -356,14 +385,29 @@ function buildMissionControlEventPayload(change, publicState, now = Date.now) {
     stats: state.stats,
     sync: buildSyncPayload(state, now).sync,
   };
+  const resolvedCard =
+    change?.card ||
+    state.masterCards.find(
+      (card) =>
+        card.id === change?.cardId ||
+        card.id === change?.issueId ||
+        card.primaryLinearIssueId === change?.issueId ||
+        card.identifier === change?.identifier ||
+        card.primaryLinearIdentifier === change?.identifier,
+    ) ||
+    null;
 
   if (change?.type === "card-upserted") {
     payload.delta = {
       action: change.action || "updated",
-      cardId: change.card?.id || null,
-      identifier: change.card?.identifier || null,
-      updatedAt: change.card?.updatedAt || null,
-      card: change.card || null,
+      cardId: resolvedCard?.id || change?.cardId || null,
+      identifier:
+        resolvedCard?.identifier ||
+        resolvedCard?.primaryLinearIdentifier ||
+        change?.identifier ||
+        null,
+      updatedAt: resolvedCard?.updatedAt || null,
+      card: resolvedCard,
     };
   } else if (change?.type === "sync-updated") {
     payload.delta = {

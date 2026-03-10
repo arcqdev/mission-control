@@ -15,6 +15,7 @@ function createConfig(port = 45123) {
         {
           key: "mission-control",
           label: "Mission Control",
+          repoPath: "~/dev/arcqdev/mission-control",
           linearProjectSlug: "mission-control",
           lane: "lane:jon",
           symphonyPort: port,

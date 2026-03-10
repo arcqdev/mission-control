@@ -16,7 +16,7 @@
         <section class="mc-header">
           <div class="mc-title">
             <h1>Mission Control</h1>
-            <p>Replay sync history, inspect divergence, and load operator-ready saved views.</p>
+            <p>Operator-first board for lanes, risk, blockers, dispatch readiness, and proof.</p>
           </div>
           <div class="mc-actions">
             <span class="mc-status-pill idle" id="mc-sync-status">Loading…</span>
@@ -27,40 +27,92 @@
           </div>
         </section>
 
+        <section class="mc-alert-stack" id="mc-alerts" hidden></section>
+
         <section class="mc-stats-grid" id="mc-stats"></section>
 
-        <section class="mc-panel">
-          <h2>Saved Views</h2>
-          <div class="mc-view-list" id="mc-saved-views"></div>
+        <section class="mc-panel mc-filter-panel">
+          <div class="mc-filter-header">
+            <div>
+              <h2>Master Board</h2>
+              <p class="mc-muted">
+                Share filtered views by URL and regroup the board for handoffs.
+              </p>
+            </div>
+            <div class="mc-filter-actions">
+              <label class="mc-filter mc-filter-search" for="mc-filter-search">
+                <span>Search</span>
+                <input
+                  id="mc-filter-search"
+                  type="search"
+                  placeholder="Issue, proof, blocker, label"
+                />
+              </label>
+              <label class="mc-filter" for="mc-group-by">
+                <span>Group by</span>
+                <select id="mc-group-by">
+                  <option value="lane">Lane</option>
+                  <option value="project">Project</option>
+                  <option value="status">Status</option>
+                  <option value="risk">Risk</option>
+                  <option value="agent">Responsible agent</option>
+                  <option value="none">No grouping</option>
+                </select>
+              </label>
+              <button class="mc-button mc-button-secondary" id="mc-clear-filters" type="button">
+                Clear filters
+              </button>
+            </div>
+          </div>
+
+          <div class="mc-filter-grid">
+            <label class="mc-filter" for="mc-filter-lane">
+              <span>Lane</span>
+              <select id="mc-filter-lane"></select>
+            </label>
+            <label class="mc-filter" for="mc-filter-project">
+              <span>Project</span>
+              <select id="mc-filter-project"></select>
+            </label>
+            <label class="mc-filter" for="mc-filter-status">
+              <span>Status</span>
+              <select id="mc-filter-status"></select>
+            </label>
+            <label class="mc-filter" for="mc-filter-risk">
+              <span>Risk</span>
+              <select id="mc-filter-risk"></select>
+            </label>
+            <label class="mc-filter" for="mc-filter-dispatch">
+              <span>Dispatch readiness</span>
+              <select id="mc-filter-dispatch"></select>
+            </label>
+            <label class="mc-filter" for="mc-filter-agent">
+              <span>Responsible agent</span>
+              <select id="mc-filter-agent"></select>
+            </label>
+          </div>
+
+          <div class="mc-filter-summary" id="mc-filter-summary"></div>
         </section>
 
-        <section class="mc-layout">
-          <div class="mc-table-shell">
-            <table class="mc-table">
-              <thead>
-                <tr>
-                  <th>Issue</th>
-                  <th>Lane</th>
-                  <th>Status</th>
-                  <th>Queue Age</th>
-                  <th>Divergence</th>
-                </tr>
-              </thead>
-              <tbody id="mc-card-table"></tbody>
-            </table>
-            <div class="mc-empty" id="mc-empty-state" hidden>No cards match the current view.</div>
-          </div>
-
-          <div class="mc-detail-stack">
-            <section class="mc-detail-card">
-              <div id="mc-card-detail"></div>
-            </section>
-
-            <section class="mc-runbook-card">
-              <h2>Operator Runbooks</h2>
-              <div class="mc-runbook-links" id="mc-runbooks"></div>
-            </section>
-          </div>
+        <section class="mc-table-shell">
+          <table class="mc-table" aria-describedby="mc-filter-summary">
+            <thead>
+              <tr>
+                <th>Issue</th>
+                <th>Lane</th>
+                <th>Project</th>
+                <th>Status</th>
+                <th>Risk</th>
+                <th>Blockers</th>
+                <th>Proof</th>
+                <th>Assignee</th>
+                <th>Last update</th>
+              </tr>
+            </thead>
+            <tbody id="mc-card-table"></tbody>
+          </table>
+          <div class="mc-empty" id="mc-empty-state" hidden>No cards match the current filters.</div>
         </section>
       </main>
     </div>

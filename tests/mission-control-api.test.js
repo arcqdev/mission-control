@@ -25,6 +25,8 @@ function createState() {
         project: { id: "project-1", name: "Mission Control", slug: "mission-control" },
         lane: "lane:jon",
         projectKey: "mission-control",
+        responsibleAgents: ["jon"],
+        dispatch: "dispatch:ready",
         healthStrip: {
           status: "ok",
           degraded: false,
@@ -48,6 +50,8 @@ function createState() {
         project: { id: "project-1", name: "Mission Control", slug: "mission-control" },
         lane: "lane:jon",
         projectKey: "mission-control",
+        responsibleAgents: ["jon"],
+        dispatch: "dispatch:blocked",
         healthStrip: {
           status: "degraded",
           degraded: true,
@@ -162,6 +166,18 @@ describe("Mission Control API payload builders", () => {
     assert.deepStrictEqual(
       payload.filters.labels.map((item) => item.label),
       ["api", "sse"],
+    );
+    assert.deepStrictEqual(
+      payload.filters.risks.map((item) => item.key),
+      ["high", "low"],
+    );
+    assert.deepStrictEqual(
+      payload.filters.dispatch.map((item) => item.key),
+      ["dispatch:blocked", "dispatch:ready"],
+    );
+    assert.deepStrictEqual(
+      payload.filters.responsibleAgents.map((item) => item.key),
+      ["jon"],
     );
   });
 
