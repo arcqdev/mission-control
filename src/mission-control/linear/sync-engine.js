@@ -1,61 +1,142 @@
 const crypto = require("crypto");
-const { createLinearClient, normalizeIssue } = require("./client");
+
+const { createLinearClient } = require("./client");
 const { createLinearSyncStore } = require("./store");
 
-function isoNow(now) {
+function isoNow(now = Date.now) {
   return new Date(now()).toISOString();
 }
 
 function maxTimestamp(left, right) {
   if (!left) return right || null;
-  if (!right) return left;
+  if (!right) return left || null;
   return Date.parse(left) >= Date.parse(right) ? left : right;
 }
 
-function subtractMilliseconds(isoValue, amount) {
-  if (!isoValue) return null;
-  return new Date(Date.parse(isoValue) - amount).toISOString();
+function subtractMilliseconds(timestamp, amountMs) {
+  if (!timestamp) return null;
+  return new Date(Date.parse(timestamp) - amountMs).toISOString();
 }
 
-function verifySignature(rawBody, signature, secret) {
-  if (!signature || !secret) return false;
-  const normalizedSignature = signature.replace(/^sha256=/, "").trim();
-  const expectedSignature = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-  const provided = Buffer.from(normalizedSignature);
-  const expected = Buffer.from(expectedSignature);
-  return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+function verifySignature(body, signature, secret) {
+  if (!signature || !secret) {
+    return false;
+  }
+
+  const expected = crypto.createHmac("sha256", secret).update(body).digest("hex");
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(String(signature));
+
+  if (expectedBuffer.length !== actualBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
-function isFreshTimestamp(timestamp, now, maxAgeMs = 5 * 60 * 1000) {
-  if (!timestamp) return true;
+function isFreshTimestamp(timestamp, now = Date.now, maxAgeMs = 5 * 60 * 1000) {
+  if (!timestamp) return false;
   const parsed = Date.parse(timestamp);
   if (Number.isNaN(parsed)) return false;
   return Math.abs(now() - parsed) <= maxAgeMs;
 }
 
 function normalizeWebhookIssue(payload) {
-  const issueLike = payload?.data || payload?.issue || null;
-  if (!issueLike?.id || !issueLike?.identifier) {
+  const issue = payload?.data || payload?.issue || payload;
+  if (!issue || typeof issue !== "object") {
     return null;
   }
-  return normalizeIssue(issueLike);
+
+  return {
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title || "Untitled",
+    description: issue.description || "",
+    url: issue.url || null,
+    priority: issue.priority ?? null,
+    estimate: issue.estimate ?? null,
+    createdAt: issue.createdAt || null,
+    updatedAt: issue.updatedAt || payload?.webhookTimestamp || null,
+    startedAt: issue.startedAt || null,
+    completedAt: issue.completedAt || null,
+    canceledAt: issue.canceledAt || null,
+    archivedAt: issue.archivedAt || null,
+    state: issue.state
+      ? {
+          id: issue.state.id || null,
+          name: issue.state.name || null,
+          type: issue.state.type || null,
+          color: issue.state.color || null,
+        }
+      : null,
+    project: issue.project
+      ? {
+          id: issue.project.id || null,
+          name: issue.project.name || null,
+          slug: issue.project.slug || null,
+          progress: issue.project.progress ?? null,
+        }
+      : null,
+    team: issue.team
+      ? {
+          id: issue.team.id || null,
+          key: issue.team.key || null,
+          name: issue.team.name || null,
+        }
+      : null,
+    assignee: issue.assignee
+      ? {
+          id: issue.assignee.id || null,
+          name: issue.assignee.name || null,
+          email: issue.assignee.email || null,
+        }
+      : null,
+    labels: Array.isArray(issue.labels)
+      ? issue.labels.map((label) => ({
+          id: label.id || null,
+          name: label.name || null,
+          color: label.color || null,
+        }))
+      : Array.isArray(issue.labels?.nodes)
+        ? issue.labels.nodes.map((label) => ({
+            id: label.id || null,
+            name: label.name || null,
+            color: label.color || null,
+          }))
+        : [],
+    cycle: issue.cycle
+      ? {
+          id: issue.cycle.id || null,
+          number: issue.cycle.number ?? null,
+          name: issue.cycle.name || null,
+          startsAt: issue.cycle.startsAt || null,
+          endsAt: issue.cycle.endsAt || null,
+        }
+      : null,
+  };
 }
 
-function createLinearSyncEngine({
-  config,
-  dataDir,
-  client,
-  now = Date.now,
-  logger = console,
-  setIntervalFn = setInterval,
-  clearIntervalFn = clearInterval,
-  setTimeoutFn = setTimeout,
-  clearTimeoutFn = clearTimeout,
-  onStateChange = () => {},
-}) {
-  const linearClient = client || createLinearClient({ apiKey: config.apiKey });
+function createLinearSyncEngine(options = {}) {
+  const config = {
+    enabled: Boolean(options.config?.enabled || options.config?.apiKey),
+    apiKey: options.config?.apiKey || null,
+    projectSlugs: options.config?.projectSlugs || [],
+    syncIntervalMs: options.config?.syncIntervalMs || 120000,
+    reconcileOverlapMs: options.config?.reconcileOverlapMs || 300000,
+    webhookPath: options.config?.webhookPath || "/api/integrations/linear/webhook",
+    webhookSecret: options.config?.webhookSecret || null,
+  };
+
+  const now = options.now || Date.now;
+  const logger = options.logger || console;
+  const setIntervalFn = options.setIntervalFn || setInterval;
+  const clearIntervalFn = options.clearIntervalFn || clearInterval;
+  const setTimeoutFn = options.setTimeoutFn || setTimeout;
+  const clearTimeoutFn = options.clearTimeoutFn || clearTimeout;
+  const onStateChange = options.onStateChange || (() => {});
+  const linearClient = options.client || createLinearClient({ apiKey: config.apiKey });
   const store = createLinearSyncStore({
-    dataDir,
+    dataDir: options.dataDir,
     now,
     pollIntervalMs: config.syncIntervalMs,
     projectSlugs: config.projectSlugs,
@@ -80,11 +161,21 @@ function createLinearSyncEngine({
 
   async function reconcile({ reason = "poll" } = {}) {
     if (!isEnabled()) {
-      store.updateSync({
-        status: "disabled",
-        lastReason: reason,
-        lastError: config.apiKey ? "No Linear project slugs configured" : "Linear sync disabled",
-      });
+      store.updateSync(
+        {
+          status: "disabled",
+          lastReason: reason,
+          lastError: config.apiKey ? "No Linear project slugs configured" : "Linear sync disabled",
+        },
+        {
+          type: "mission-control.linear.reconcile.skipped",
+          source: reason,
+          payload: {
+            reason,
+            error: config.apiKey ? "No Linear project slugs configured" : "Linear sync disabled",
+          },
+        },
+      );
       return getPublicState();
     }
 
@@ -97,12 +188,23 @@ function createLinearSyncEngine({
       const priorCursor = store.getSnapshot().sync.cursor?.updatedAfter || null;
       const updatedAfter = subtractMilliseconds(priorCursor, config.reconcileOverlapMs || 0);
 
-      store.updateSync({
-        status: "syncing",
-        lastAttemptedAt: attemptAt,
-        lastReason: reason,
-        lastError: null,
-      });
+      store.updateSync(
+        {
+          status: "syncing",
+          lastAttemptedAt: attemptAt,
+          lastReason: reason,
+          lastError: null,
+        },
+        {
+          type: "mission-control.linear.reconcile.started",
+          source: reason,
+          payload: {
+            reason,
+            updatedAfter,
+          },
+          occurredAt: attemptAt,
+        },
+      );
 
       try {
         const remoteIssues = await linearClient.fetchIssuesForProjects({
@@ -123,21 +225,43 @@ function createLinearSyncEngine({
           cursor = maxTimestamp(cursor, issue.updatedAt);
         }
 
-        store.updateSync({
-          status: "ok",
-          cursor: {
-            updatedAfter: cursor || priorCursor || attemptAt,
+        store.updateSync(
+          {
+            status: "ok",
+            cursor: {
+              updatedAfter: cursor || priorCursor || attemptAt,
+            },
+            lastSuccessfulAt: isoNow(now),
+            lastError: null,
+            lastFetchedCount: remoteIssues.length,
+            lastChangedCount: changedCount,
           },
-          lastSuccessfulAt: isoNow(now),
-          lastError: null,
-          lastFetchedCount: remoteIssues.length,
-          lastChangedCount: changedCount,
-        });
+          {
+            type: "mission-control.linear.reconcile.completed",
+            source: reason,
+            payload: {
+              reason,
+              updatedAfter: cursor || priorCursor || attemptAt,
+              fetchedCount: remoteIssues.length,
+              changedCount,
+            },
+          },
+        );
       } catch (error) {
-        store.updateSync({
-          status: "error",
-          lastError: error.message,
-        });
+        store.updateSync(
+          {
+            status: "error",
+            lastError: error.message,
+          },
+          {
+            type: "mission-control.linear.reconcile.failed",
+            source: reason,
+            payload: {
+              reason,
+              error: error.message,
+            },
+          },
+        );
         logger.error("[Linear Sync] Reconcile failed:", error.message);
       } finally {
         reconcilePromise = null;
@@ -169,6 +293,18 @@ function createLinearSyncEngine({
 
     const signature = headers["linear-signature"] || headers["Linear-Signature"];
     if (!verifySignature(rawBody, signature, config.webhookSecret)) {
+      store.updateSync(
+        {
+          lastError: "Invalid Linear webhook signature",
+        },
+        {
+          type: "mission-control.linear.webhook.rejected",
+          source: "webhook",
+          payload: {
+            reason: "invalid-signature",
+          },
+        },
+      );
       return {
         statusCode: 401,
         body: { error: "Invalid Linear webhook signature" },
@@ -179,6 +315,19 @@ function createLinearSyncEngine({
     try {
       payload = rawBody ? JSON.parse(rawBody) : {};
     } catch (error) {
+      store.updateSync(
+        {
+          lastError: `Invalid JSON body: ${error.message}`,
+        },
+        {
+          type: "mission-control.linear.webhook.rejected",
+          source: "webhook",
+          payload: {
+            reason: "invalid-json",
+            error: error.message,
+          },
+        },
+      );
       return {
         statusCode: 400,
         body: { error: `Invalid JSON body: ${error.message}` },
@@ -186,6 +335,18 @@ function createLinearSyncEngine({
     }
 
     if (!isFreshTimestamp(payload.webhookTimestamp, now)) {
+      store.updateSync(
+        {
+          lastError: "Stale Linear webhook payload",
+        },
+        {
+          type: "mission-control.linear.webhook.rejected",
+          source: "webhook",
+          payload: {
+            reason: "stale-payload",
+          },
+        },
+      );
       return {
         statusCode: 401,
         body: { error: "Stale Linear webhook payload" },
@@ -199,19 +360,25 @@ function createLinearSyncEngine({
       payload.id ||
       null;
 
+    const issue = normalizeWebhookIssue(payload);
+
     if (deliveryId && store.hasSeenWebhookDelivery(deliveryId)) {
-      store.noteWebhookDelivery({ deliveryId, receivedAt: isoNow(now) });
+      store.noteWebhookDelivery({
+        deliveryId,
+        receivedAt: isoNow(now),
+        issue,
+        duplicate: true,
+      });
       return {
         statusCode: 200,
         body: { ok: true, duplicate: true },
       };
     }
 
-    const issue = normalizeWebhookIssue(payload);
     const belongsToConfiguredProject =
       !issue?.project?.slug || config.projectSlugs.includes(issue.project.slug);
 
-    store.noteWebhookDelivery({ deliveryId, receivedAt: isoNow(now) });
+    store.noteWebhookDelivery({ deliveryId, receivedAt: isoNow(now), issue, duplicate: false });
 
     let changed = false;
     if (issue && belongsToConfiguredProject) {
@@ -221,6 +388,22 @@ function createLinearSyncEngine({
         receivedAt: isoNow(now),
       });
       changed = result.changed;
+    } else if (issue) {
+      store.appendAuditEvent(
+        "mission-control.linear.webhook.ignored",
+        {
+          reason: "project-not-configured",
+          projectSlug: issue.project?.slug || null,
+        },
+        {
+          occurredAt: isoNow(now),
+          source: "webhook",
+          cardId: issue.id ? `mc:${issue.id}` : null,
+          issueId: issue.id || null,
+          identifier: issue.identifier || null,
+          deliveryId,
+        },
+      );
     }
 
     scheduleAcceleratedReconcile();
@@ -238,10 +421,18 @@ function createLinearSyncEngine({
   function start() {
     if (pollHandle || !isEnabled()) {
       if (!isEnabled()) {
-        store.updateSync({
-          status: "disabled",
-          lastError: config.apiKey ? "No Linear project slugs configured" : "Linear sync disabled",
-        });
+        store.updateSync(
+          {
+            status: "disabled",
+            lastError: config.apiKey ? "No Linear project slugs configured" : "Linear sync disabled",
+          },
+          {
+            type: "mission-control.linear.sync.disabled",
+            payload: {
+              error: config.apiKey ? "No Linear project slugs configured" : "Linear sync disabled",
+            },
+          },
+        );
       }
       return;
     }
@@ -274,6 +465,8 @@ function createLinearSyncEngine({
     reconcile,
     handleWebhook,
     getPublicState,
+    getTimelineForCard: (reference) => store.getTimelineForCard(reference),
+    getEventLog: () => store.readEventLog(),
     getWebhookPath: () => config.webhookPath,
     isEnabled,
   };
@@ -281,7 +474,7 @@ function createLinearSyncEngine({
 
 module.exports = {
   createLinearSyncEngine,
-  verifySignature,
   isFreshTimestamp,
   normalizeWebhookIssue,
+  verifySignature,
 };

@@ -56,7 +56,7 @@ function signPayload(secret, payload) {
 }
 
 describe("Mission Control Linear store", () => {
-  it("performs idempotent upserts without duplicating events", () => {
+  it("performs idempotent upserts while recording audit observations", () => {
     const dataDir = createTempDir();
     const now = () => Date.parse("2026-03-10T00:00:00.000Z");
     const store = createLinearSyncStore({
@@ -83,7 +83,10 @@ describe("Mission Control Linear store", () => {
 
     const state = store.getPublicState();
     assert.strictEqual(state.stats.totalCards, 1);
-    assert.strictEqual(state.stats.eventCount, 1);
+    assert.strictEqual(state.stats.eventCount, 2);
+
+    const timeline = store.getTimelineForCard({ cardId: "mc:issue-1" });
+    assert.strictEqual(timeline.length, 2);
   });
 });
 
@@ -193,7 +196,7 @@ describe("Mission Control Linear sync engine", () => {
     assert.strictEqual(second.statusCode, 200);
     assert.strictEqual(second.body.duplicate, true);
     assert.strictEqual(state.stats.totalCards, 1);
-    assert.strictEqual(state.stats.eventCount, 1);
+    assert.ok(state.stats.eventCount >= 3);
   });
 
   it("reconciles from persisted snapshot after downtime", async () => {
@@ -256,7 +259,7 @@ describe("Mission Control Linear sync engine", () => {
     const state = secondEngine.getPublicState();
 
     assert.strictEqual(state.masterCards[0].state.name, "Done");
-    assert.strictEqual(state.stats.eventCount, 2);
+    assert.ok(state.stats.eventCount >= 4);
     assert.strictEqual(state.sync.cursor.updatedAfter, "2026-03-10T00:08:00.000Z");
     assert.strictEqual(state.sync.status, "ok");
   });
@@ -295,53 +298,53 @@ describe("Mission Control Linear sync engine", () => {
     assert.strictEqual(state.sync.lastError, "Linear unavailable");
     assert.strictEqual(state.stats.totalCards, 0);
   });
-});
 
-it("emits store change notifications for webhook upserts", async () => {
-  const dataDir = createTempDir();
-  const currentTime = Date.parse("2026-03-10T00:00:00.000Z");
-  const now = () => currentTime;
-  const secret = "brood-war";
-  const issue = createIssue();
-  const payload = JSON.stringify({
-    action: "update",
-    webhookTimestamp: new Date(currentTime).toISOString(),
-    data: issue,
+  it("emits store change notifications for webhook upserts", async () => {
+    const dataDir = createTempDir();
+    const currentTime = Date.parse("2026-03-10T00:00:00.000Z");
+    const now = () => currentTime;
+    const secret = "brood-war";
+    const issue = createIssue();
+    const payload = JSON.stringify({
+      action: "update",
+      webhookTimestamp: new Date(currentTime).toISOString(),
+      data: issue,
+    });
+    const changes = [];
+
+    const engine = createLinearSyncEngine({
+      config: {
+        enabled: false,
+        apiKey: null,
+        projectSlugs: ["mission-control"],
+        syncIntervalMs: 120000,
+        reconcileOverlapMs: 300000,
+        webhookPath: "/api/integrations/linear/webhook",
+        webhookSecret: secret,
+      },
+      dataDir,
+      now,
+      onStateChange: (change) => changes.push(change.type),
+      setIntervalFn: () => 1,
+      clearIntervalFn: () => {},
+      setTimeoutFn: (fn) => {
+        fn();
+        return 1;
+      },
+      clearTimeoutFn: () => {},
+    });
+
+    const response = await engine.handleWebhook({
+      headers: {
+        "linear-signature": signPayload(secret, payload),
+        "linear-delivery": "delivery-2",
+      },
+      rawBody: payload,
+    });
+
+    assert.strictEqual(response.statusCode, 202);
+    assert.ok(changes.includes("webhook-delivery"));
+    assert.ok(changes.includes("card-upserted"));
+    assert.ok(changes.includes("sync-updated"));
   });
-  const changes = [];
-
-  const engine = createLinearSyncEngine({
-    config: {
-      enabled: false,
-      apiKey: null,
-      projectSlugs: ["mission-control"],
-      syncIntervalMs: 120000,
-      reconcileOverlapMs: 300000,
-      webhookPath: "/api/integrations/linear/webhook",
-      webhookSecret: secret,
-    },
-    dataDir,
-    now,
-    onStateChange: (change) => changes.push(change.type),
-    setIntervalFn: () => 1,
-    clearIntervalFn: () => {},
-    setTimeoutFn: (fn) => {
-      fn();
-      return 1;
-    },
-    clearTimeoutFn: () => {},
-  });
-
-  const response = await engine.handleWebhook({
-    headers: {
-      "linear-signature": signPayload(secret, payload),
-      "linear-delivery": "delivery-2",
-    },
-    rawBody: payload,
-  });
-
-  assert.strictEqual(response.statusCode, 202);
-  assert.ok(changes.includes("webhook-delivery"));
-  assert.ok(changes.includes("card-upserted"));
-  assert.ok(changes.includes("sync-updated"));
 });

@@ -29,7 +29,8 @@
     "avgCostSess": "Avg $/Sess",
     "autoRefresh": "Auto-refresh: 30s",
     "live": "Live: {time}",
-    "updated": "Updated: {time}"
+    "updated": "Updated: {time}",
+    "missionControl": "Mission Control"
   },
   "stats": {
     "totalTokens": "Total Tokens",

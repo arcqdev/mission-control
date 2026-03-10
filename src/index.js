@@ -101,6 +101,7 @@ const { createMissionControlService } = require("./mission-control");
 const PORT = CONFIG.server.port;
 const HOST = CONFIG.server.host;
 const DASHBOARD_DIR = path.join(__dirname, "../public");
+const DOCS_DIR = path.join(__dirname, "../docs");
 const PATHS = CONFIG.paths;
 
 const AUTH_CONFIG = {
@@ -116,9 +117,10 @@ const DATA_DIR = path.join(getOpenClawDir(), "command-center", "data");
 const LEGACY_DATA_DIR = path.join(DASHBOARD_DIR, "data");
 let lastMissionControlEventAt = null;
 let lastMissionControlReplayAt = null;
-const MISSION_CONTROL = createMissionControlService({
+const missionControl = createMissionControlService({
   config: CONFIG,
   dataDir: DATA_DIR,
+  logger: console,
   onStateChange: (change) => {
     if (typeof state?.invalidateStateCache === "function") {
       state.invalidateStateCache();
@@ -129,7 +131,7 @@ const MISSION_CONTROL = createMissionControlService({
     }
 
     lastMissionControlEventAt = new Date().toISOString();
-    const publicState = change?.publicState || MISSION_CONTROL.getPublicState();
+    const publicState = change?.publicState || missionControl.getPublicState();
     broadcastSSE("mission-control", buildMissionControlEventPayload(change, publicState));
   },
 });
@@ -171,7 +173,7 @@ function replayMissionControlState(reason = "manual-replay") {
     state.invalidateStateCache();
   }
 
-  const publicState = MISSION_CONTROL.getPublicState();
+  const publicState = missionControl.getPublicState();
   const replayedAt = new Date().toISOString();
   lastMissionControlEventAt = replayedAt;
   lastMissionControlReplayAt = replayedAt;
@@ -193,9 +195,18 @@ function replayMissionControlState(reason = "manual-replay") {
 }
 
 function handleMissionControlApi(req, res, pathname) {
-  const publicState = MISSION_CONTROL.getPublicState();
+  const publicState = missionControl.getPublicState();
 
-  if (pathname === "/api/mission-control" || pathname === "/api/mission-control/board") {
+  if (pathname === "/api/mission-control") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+    writeJson(res, 200, publicState);
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/board") {
     if (req.method !== "GET") {
       writeJson(res, 405, { error: "Method not allowed" });
       return true;
@@ -231,6 +242,95 @@ function handleMissionControlApi(req, res, pathname) {
     return true;
   }
 
+  if (pathname === "/api/mission-control/diagnostics") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+    writeJson(res, 200, missionControl.getDiagnostics());
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/views") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+    writeJson(res, 200, missionControl.getSavedViews());
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/views/active") {
+    if (req.method !== "POST") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+
+    readJsonBody(req)
+      .then((body) => writeJson(res, 200, missionControl.setActiveView(body.viewId)))
+      .catch((error) => writeJson(res, 400, { error: `Invalid JSON: ${error.message}` }));
+
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/reconcile") {
+    if (req.method !== "POST") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+
+    missionControl
+      .reconcile({ reason: "manual" })
+      .then(() => {
+        writeJson(res, 200, missionControl.getPublicState());
+      })
+      .catch((error) => {
+        writeJson(res, 500, { error: error.message });
+      });
+
+    return true;
+  }
+
+  if (pathname.startsWith("/api/mission-control/cards/") && pathname.endsWith("/timeline")) {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+
+    const cardRef = decodeURIComponent(
+      pathname.replace("/api/mission-control/cards/", "").replace("/timeline", ""),
+    );
+    const timeline = missionControl.getCardTimeline(cardRef);
+
+    if (!timeline) {
+      writeJson(res, 404, { error: "Mission Control card not found" });
+    } else {
+      writeJson(res, 200, { timeline });
+    }
+
+    return true;
+  }
+
+  if (pathname.startsWith("/api/mission-control/cards/") && pathname.endsWith("/replay")) {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+
+    const cardRef = decodeURIComponent(
+      pathname.replace("/api/mission-control/cards/", "").replace("/replay", ""),
+    );
+    const replay = missionControl.replayCardTimeline(cardRef);
+
+    if (!replay) {
+      writeJson(res, 404, { error: "Mission Control card not found" });
+    } else {
+      writeJson(res, 200, { replay });
+    }
+
+    return true;
+  }
+
   if (pathname === "/api/mission-control/admin/status") {
     if (req.method !== "GET") {
       writeJson(res, 405, { error: "Method not allowed" });
@@ -246,17 +346,20 @@ function handleMissionControlApi(req, res, pathname) {
       return true;
     }
 
-    MISSION_CONTROL.reconcile({ reason: "manual-admin" })
-      .then((nextState) => {
+    missionControl
+      .reconcile({ reason: "manual-admin" })
+      .then(() => {
         if (typeof state.invalidateStateCache === "function") {
           state.invalidateStateCache();
         }
 
+        const refreshedState = missionControl.getPublicState();
+
         writeJson(res, 200, {
           ok: true,
           triggeredAt: new Date().toISOString(),
-          board: buildBoardPayload(nextState),
-          sync: buildSyncPayload(nextState).sync,
+          board: buildBoardPayload(refreshedState),
+          sync: buildSyncPayload(refreshedState).sync,
         });
       })
       .catch((error) => {
@@ -315,7 +418,7 @@ const state = createStateModule({
   runOpenClaw,
   extractJSON,
   readTranscript: (sessionId) => sessions.readTranscript(sessionId),
-  getMissionControlState: () => MISSION_CONTROL.getPublicState(),
+  getMissionControlState: () => missionControl.getPublicState(),
 });
 
 // ============================================================================
@@ -325,7 +428,7 @@ process.nextTick(() => migrateDataDir(DATA_DIR, LEGACY_DATA_DIR));
 startOperatorsRefresh(DATA_DIR, getOpenClawDir);
 startLlmUsageRefresh();
 startTokenUsageRefresh(getOpenClawDir);
-MISSION_CONTROL.start();
+missionControl.start();
 
 // ============================================================================
 // STATIC FILE SERVER
@@ -344,9 +447,10 @@ function serveStatic(req, res) {
 
   // Normalize and resolve to ensure path stays within DASHBOARD_DIR
   const normalizedPath = path.normalize(pathname).replace(/^[/\\]+/, "");
-  const filePath = path.join(DASHBOARD_DIR, normalizedPath);
+  const baseDir = pathname.startsWith("/docs/") ? DOCS_DIR : DASHBOARD_DIR;
+  const filePath = path.join(baseDir, normalizedPath);
 
-  const resolvedDashboardDir = path.resolve(DASHBOARD_DIR);
+  const resolvedDashboardDir = path.resolve(baseDir);
   const resolvedFilePath = path.resolve(filePath);
   if (
     !resolvedFilePath.startsWith(resolvedDashboardDir + path.sep) &&
@@ -363,6 +467,7 @@ function serveStatic(req, res) {
     ".css": "text/css",
     ".js": "text/javascript",
     ".json": "application/json",
+    ".md": "text/markdown; charset=utf-8",
     ".png": "image/png",
     ".svg": "image/svg+xml",
   };
@@ -536,13 +641,13 @@ const server = http.createServer((req, res) => {
     const result = executeAction(action, { runOpenClaw, extractJSON, PORT });
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(result, null, 2));
-  } else if (pathname === MISSION_CONTROL.getWebhookPath() && req.method === "POST") {
+  } else if (pathname === missionControl.getWebhookPath() && req.method === "POST") {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
     });
     req.on("end", async () => {
-      const result = await MISSION_CONTROL.handleWebhook({ headers: req.headers, rawBody: body });
+      const result = await missionControl.handleWebhook({ headers: req.headers, rawBody: body });
       res.writeHead(result.statusCode, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result.body, null, 2));
     });
@@ -812,7 +917,7 @@ function shutdownServer() {
   }
 
   shuttingDown = true;
-  MISSION_CONTROL.stop();
+  missionControl.stop();
 
   const forceExitTimer = setTimeout(() => process.exit(0), 5000);
   forceExitTimer.unref?.();

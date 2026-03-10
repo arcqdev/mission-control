@@ -1,95 +1,36 @@
-const VALID_LANES = new Set(["lane:jon", "lane:mia", "lane:pepper"]);
+const os = require("os");
 
-function cleanString(value) {
-  if (value === null || value === undefined) {
-    return "";
-  }
+const {
+  MISSION_CONTROL_SCHEMA_VERSION,
+  normalizeAgentIdentity,
+  normalizeDiscordDestination,
+  normalizeProjectRegistryEntry,
+  toIsoTimestamp,
+} = require("./models");
 
-  return String(value).trim();
-}
-
-function normalizeLane(value, fallback = null) {
-  const candidate = cleanString(value);
-  if (VALID_LANES.has(candidate)) {
-    return candidate;
-  }
-
-  return fallback;
-}
-
-function normalizeSymphonyEndpoint(project) {
-  const directEndpoint = cleanString(
-    project?.symphonyEndpoint || project?.symphonyUrl || project?.runtimeEndpoint,
-  );
-  if (directEndpoint) {
-    try {
-      const parsed = new URL(directEndpoint);
-      return {
-        url: parsed.toString(),
-        host: parsed.hostname,
-        port: parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80,
-        path: parsed.pathname || "/health",
-        protocol: parsed.protocol || "http:",
-      };
-    } catch (error) {
-      throw new Error(
-        `Mission Control project '${cleanString(project?.key)}' has invalid symphonyEndpoint: ${error.message}`,
-      );
-    }
-  }
-
-  if (
-    project?.symphonyPort === null ||
-    project?.symphonyPort === undefined ||
-    project?.symphonyPort === ""
-  ) {
-    return null;
-  }
-
-  const port = Number.parseInt(String(project.symphonyPort), 10);
-  if (!Number.isInteger(port) || port <= 0) {
-    throw new Error(
-      `Mission Control project '${cleanString(project?.key)}' has invalid symphonyPort`,
-    );
-  }
-
-  const protocol = cleanString(project?.symphonyProtocol || "http:").replace(/:?$/, ":");
-  const host = cleanString(project?.symphonyHost || "127.0.0.1");
-  const path = cleanString(project?.symphonyHealthPath || "/health") || "/health";
-
-  return {
-    url: `${protocol}//${host}:${port}${path.startsWith("/") ? path : `/${path}`}`,
-    host,
-    port,
-    path: path.startsWith("/") ? path : `/${path}`,
-    protocol,
-  };
-}
-
-function normalizeProject(project) {
-  const key = cleanString(project?.key);
-  const linearProjectSlug = cleanString(project?.linearProjectSlug || project?.linearSlug);
-  const lane = normalizeLane(project?.lane);
-
-  if (!key) {
-    throw new Error("Mission Control project registry entry is missing key");
-  }
-  if (!linearProjectSlug) {
-    throw new Error(`Mission Control project '${key}' is missing linearProjectSlug`);
-  }
-  if (!lane) {
-    throw new Error(`Mission Control project '${key}' is missing a valid lane`);
-  }
-
-  return {
-    key,
-    label: cleanString(project?.label || project?.name) || key,
-    linearProjectSlug,
-    lane,
-    repoPath: cleanString(project?.repoPath) || null,
-    symphony: normalizeSymphonyEndpoint(project),
-  };
-}
+const DEFAULT_AGENT_IDENTITIES = Object.freeze([
+  {
+    key: "jon",
+    displayName: "Jon",
+    defaultLane: "lane:jon",
+    defaultNotificationProfile: "jon",
+    heartbeatSources: ["symphony"],
+  },
+  {
+    key: "mia",
+    displayName: "Mia",
+    defaultLane: "lane:mia",
+    defaultNotificationProfile: "mia",
+    heartbeatSources: ["proof"],
+  },
+  {
+    key: "pepper",
+    displayName: "Pepper",
+    defaultLane: "lane:pepper",
+    defaultNotificationProfile: "pepper",
+    heartbeatSources: ["dispatch"],
+  },
+]);
 
 function sortByKey(items) {
   return [...items].sort((left, right) => left.key.localeCompare(right.key));
@@ -100,9 +41,6 @@ function ensureUnique(items, fieldName, collectionName) {
 
   for (const item of items) {
     const value = item[fieldName];
-    if (!value) {
-      continue;
-    }
     if (seen.has(value)) {
       throw new Error(`Mission Control ${collectionName} has duplicate ${fieldName}: ${value}`);
     }
@@ -110,17 +48,38 @@ function ensureUnique(items, fieldName, collectionName) {
   }
 }
 
-function loadMissionControlRegistry(config = {}) {
-  const rawProjects = config.missionControl?.projects || [];
-  const projects = sortByKey(rawProjects.map(normalizeProject));
+function loadMissionControlRegistry(config = {}, options = {}) {
+  const now = toIsoTimestamp(options.now);
+  const missionControlConfig = config.missionControl || {};
+  const rawProjects = missionControlConfig.projects || missionControlConfig.projectRegistry || [];
+  const rawAgents =
+    missionControlConfig.agents && missionControlConfig.agents.length > 0
+      ? missionControlConfig.agents
+      : DEFAULT_AGENT_IDENTITIES;
+  const rawDiscordDestinations = missionControlConfig.discordDestinations || [];
+
+  const projects = sortByKey(
+    rawProjects.map((project) => normalizeProjectRegistryEntry(project, { now })),
+  );
+  const agents = sortByKey(rawAgents.map((agent) => normalizeAgentIdentity(agent, { now })));
+  const discordDestinations = sortByKey(
+    rawDiscordDestinations.map((destination) => normalizeDiscordDestination(destination)),
+  );
 
   ensureUnique(projects, "key", "project registry");
   ensureUnique(projects, "linearProjectSlug", "project registry");
+  ensureUnique(agents, "key", "agent registry");
+  ensureUnique(discordDestinations, "key", "Discord destinations");
 
   return {
-    schemaVersion: 1,
+    schemaVersion: MISSION_CONTROL_SCHEMA_VERSION,
     projectCount: projects.length,
+    createdAt: now,
+    updatedAt: now,
+    host: os.hostname(),
     projects,
+    agents,
+    discordDestinations,
   };
 }
 
@@ -133,15 +92,11 @@ function buildProjectRegistryIndexes(registry) {
     projectByLinearSlug.set(project.linearProjectSlug, project);
   }
 
-  return {
-    projectByKey,
-    projectByLinearSlug,
-  };
+  return { projectByKey, projectByLinearSlug };
 }
 
 module.exports = {
-  VALID_LANES,
+  DEFAULT_AGENT_IDENTITIES,
   buildProjectRegistryIndexes,
   loadMissionControlRegistry,
-  normalizeLane,
 };

@@ -190,6 +190,30 @@ describe("config module", () => {
       assert.strictEqual(config.missionControl.projects[0].lane, "lane:jon");
       assert.strictEqual(config.missionControl.projects[0].symphonyPort, 45123);
     });
+
+    it("LINEAR_WEBHOOK_PATH env var overrides the default webhook path", () => {
+      process.env.LINEAR_API_KEY = "linear-key";
+      process.env.LINEAR_PROJECT_SLUGS = "littlebrief,mission-control";
+      process.env.LINEAR_WEBHOOK_PATH = "/api/integrations/linear/webhook";
+
+      for (const key of Object.keys(require.cache)) {
+        if (key.includes("config.js")) {
+          delete require.cache[key];
+        }
+      }
+
+      const { loadConfig } = require("../src/config");
+      const config = loadConfig();
+
+      assert.deepStrictEqual(config.integrations.linear.projectSlugs, [
+        "littlebrief",
+        "mission-control",
+      ]);
+      assert.strictEqual(
+        config.integrations.linear.webhookPath,
+        "/api/integrations/linear/webhook",
+      );
+    });
   });
 });
 

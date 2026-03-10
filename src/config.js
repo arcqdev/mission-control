@@ -184,9 +184,6 @@ function expandPath(p) {
     .replace(/\$\{HOME\}/g, HOME);
 }
 
-/**
- * Parse a comma-separated environment variable or array config value.
- */
 function parseList(value) {
   if (!value) return [];
   if (Array.isArray(value)) {
@@ -315,6 +312,14 @@ function loadConfig() {
       projects: parseJsonArray(
         process.env.MISSION_CONTROL_PROJECTS_JSON,
         fileConfig.missionControl?.projects || [],
+      ),
+      agents: parseJsonArray(
+        process.env.MISSION_CONTROL_AGENTS_JSON,
+        fileConfig.missionControl?.agents || [],
+      ),
+      discordDestinations: parseJsonArray(
+        process.env.MISSION_CONTROL_DISCORD_DESTINATIONS_JSON,
+        fileConfig.missionControl?.discordDestinations || [],
       ),
       symphonyPollIntervalMs: parseInt(
         process.env.MISSION_CONTROL_SYMPHONY_POLL_INTERVAL_MS ||

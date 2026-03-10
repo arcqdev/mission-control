@@ -6,7 +6,7 @@ const SNAPSHOT_FILENAME = "linear-sync-snapshot.json";
 const EVENT_LOG_FILENAME = "linear-sync-events.jsonl";
 const RECENT_DELIVERY_LIMIT = 100;
 
-function isoNow(now) {
+function isoNow(now = Date.now) {
   return new Date(now()).toISOString();
 }
 
@@ -26,8 +26,25 @@ function sortObject(value) {
     }, {});
 }
 
-function stableStringify(value) {
-  return JSON.stringify(sortObject(value));
+function stableStringify(value, spacing = 0) {
+  return JSON.stringify(sortObject(value), null, spacing);
+}
+
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function atomicWriteJson(filePath, value) {
+  const dirPath = path.dirname(filePath);
+  ensureDir(dirPath);
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, `${stableStringify(value, 2)}\n`, "utf8");
+  fs.renameSync(tempPath, filePath);
+}
+
+function appendJsonLine(filePath, value) {
+  ensureDir(path.dirname(filePath));
+  fs.appendFileSync(filePath, `${stableStringify(value)}\n`, "utf8");
 }
 
 function normalizeCard(input) {
@@ -119,6 +136,11 @@ function createInitialSnapshot({ now, pollIntervalMs, projectSlugs, webhook }) {
       lastFetchedCount: 0,
       lastChangedCount: 0,
       lagMs: null,
+      persistence: {
+        enabled: true,
+        lastWriteAt: null,
+        lastWriteError: null,
+      },
       webhook: {
         enabled: Boolean(webhook?.enabled),
         path: webhook?.path || null,
@@ -127,12 +149,6 @@ function createInitialSnapshot({ now, pollIntervalMs, projectSlugs, webhook }) {
       },
     },
   };
-}
-
-function ensureDir(dirPath) {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
 }
 
 function createLinearSyncStore({
@@ -155,6 +171,8 @@ function createLinearSyncStore({
   } catch (error) {
     persistenceEnabled = false;
     snapshot.sync.lastError = `Linear snapshot persistence unavailable: ${error.message}`;
+    snapshot.sync.persistence.enabled = false;
+    snapshot.sync.persistence.lastWriteError = error.message;
   }
 
   try {
@@ -167,6 +185,10 @@ function createLinearSyncStore({
         sync: {
           ...snapshot.sync,
           ...(loaded.sync || {}),
+          persistence: {
+            ...snapshot.sync.persistence,
+            ...(loaded.sync?.persistence || {}),
+          },
           webhook: {
             ...snapshot.sync.webhook,
             ...(loaded.sync?.webhook || {}),
@@ -177,6 +199,31 @@ function createLinearSyncStore({
   } catch (error) {
     snapshot.sync.status = "error";
     snapshot.sync.lastError = `Failed to load Linear snapshot: ${error.message}`;
+    snapshot.sync.persistence.lastWriteError = error.message;
+  }
+
+  function computeLagMs() {
+    if (!snapshot.sync.lastSuccessfulAt) return null;
+    return Math.max(0, now() - Date.parse(snapshot.sync.lastSuccessfulAt));
+  }
+
+  function persistSnapshot() {
+    snapshot.updatedAt = isoNow(now);
+    snapshot.sync.persistence.enabled = persistenceEnabled;
+    if (!persistenceEnabled) {
+      return;
+    }
+
+    try {
+      atomicWriteJson(snapshotPath, snapshot);
+      snapshot.sync.persistence.lastWriteAt = isoNow(now);
+      snapshot.sync.persistence.lastWriteError = null;
+    } catch (error) {
+      persistenceEnabled = false;
+      snapshot.sync.persistence.enabled = false;
+      snapshot.sync.persistence.lastWriteError = error.message;
+      snapshot.sync.lastError = `Failed to persist Linear snapshot: ${error.message}`;
+    }
   }
 
   function emitChange(change) {
@@ -190,48 +237,77 @@ function createLinearSyncStore({
     }
   }
 
-  function persistSnapshot() {
-    snapshot.updatedAt = isoNow(now);
-    if (!persistenceEnabled) return;
-
-    try {
-      fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2));
-    } catch (error) {
-      persistenceEnabled = false;
-      snapshot.sync.lastError = `Failed to persist Linear snapshot: ${error.message}`;
-    }
-  }
-
-  function appendEvent(event) {
+  function appendAuditEvent(type, payload = {}, context = {}) {
     snapshot.eventCount += 1;
-    if (!persistenceEnabled) return;
+    const event = {
+      sequence: snapshot.eventCount,
+      type,
+      occurredAt: context.occurredAt || isoNow(now),
+      source: context.source || null,
+      cardId: context.cardId || null,
+      issueId: context.issueId || null,
+      identifier: context.identifier || null,
+      deliveryId: context.deliveryId || null,
+      payload,
+    };
+
+    if (!persistenceEnabled) {
+      return event;
+    }
 
     try {
-      fs.appendFileSync(eventLogPath, `${JSON.stringify(event)}\n`);
+      appendJsonLine(eventLogPath, event);
+      snapshot.sync.persistence.lastWriteAt = event.occurredAt;
+      snapshot.sync.persistence.lastWriteError = null;
     } catch (error) {
       persistenceEnabled = false;
+      snapshot.sync.persistence.enabled = false;
+      snapshot.sync.persistence.lastWriteError = error.message;
       snapshot.sync.lastError = `Failed to append Linear event log: ${error.message}`;
     }
+
+    return event;
   }
 
-  function computeLagMs() {
-    if (!snapshot.sync.lastSuccessfulAt) return null;
-    return Math.max(0, now() - Date.parse(snapshot.sync.lastSuccessfulAt));
+  function readEventLog() {
+    if (!fs.existsSync(eventLogPath)) {
+      return [];
+    }
+
+    return fs
+      .readFileSync(eventLogPath, "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
   }
 
-  function noteWebhookDelivery({ deliveryId, receivedAt }) {
+  function noteWebhookDelivery({ deliveryId, receivedAt, issue, duplicate = false }) {
     snapshot.sync.lastWebhookAt = receivedAt;
     snapshot.sync.webhook.lastDeliveryId = deliveryId || null;
     if (deliveryId) {
       snapshot.sync.webhook.recentDeliveryIds = [
         deliveryId,
-        ...snapshot.sync.webhook.recentDeliveryIds.filter(
-          (existingId) => existingId !== deliveryId,
-        ),
+        ...snapshot.sync.webhook.recentDeliveryIds.filter((existingId) => existingId !== deliveryId),
       ].slice(0, RECENT_DELIVERY_LIMIT);
     }
+
+    appendAuditEvent(
+      duplicate ? "mission-control.linear.webhook.duplicate" : "mission-control.linear.webhook.received",
+      {
+        projectSlug: issue?.project?.slug || null,
+      },
+      {
+        occurredAt: receivedAt,
+        source: "webhook",
+        cardId: issue?.id ? `mc:${issue.id}` : null,
+        issueId: issue?.id || null,
+        identifier: issue?.identifier || null,
+        deliveryId,
+      },
+    );
     persistSnapshot();
-    emitChange({ type: "webhook-delivery", deliveryId, receivedAt });
+    emitChange({ type: "webhook-delivery", deliveryId, receivedAt, duplicate });
   }
 
   function hasSeenWebhookDelivery(deliveryId) {
@@ -239,18 +315,39 @@ function createLinearSyncStore({
     return snapshot.sync.webhook.recentDeliveryIds.includes(deliveryId);
   }
 
-  function updateSync(partial) {
+  function updateSync(partial, audit = {}) {
     snapshot.sync = {
       ...snapshot.sync,
       ...partial,
+      persistence: {
+        ...snapshot.sync.persistence,
+        ...(partial.persistence || {}),
+      },
       webhook: {
         ...snapshot.sync.webhook,
         ...(partial.webhook || {}),
       },
     };
     snapshot.sync.lagMs = computeLagMs();
+
+    if (audit.type) {
+      appendAuditEvent(audit.type, audit.payload || {}, {
+        occurredAt: audit.occurredAt,
+        source: audit.source,
+        cardId: audit.cardId,
+        issueId: audit.issueId,
+        identifier: audit.identifier,
+        deliveryId: audit.deliveryId,
+      });
+    }
+
     persistSnapshot();
-    emitChange({ type: "sync-updated", partial, sync: snapshot.sync });
+    emitChange({
+      type: "sync-updated",
+      source: audit.source || partial.lastReason || null,
+      auditType: audit.type || null,
+      occurredAt: audit.occurredAt || isoNow(now),
+    });
   }
 
   function upsertCard(cardInput, context = {}) {
@@ -258,8 +355,34 @@ function createLinearSyncStore({
     const previous = snapshot.cards[normalizedCard.id] || null;
     const nextFingerprint = stableStringify(normalizedCard);
     const previousFingerprint = previous ? stableStringify(normalizeCard(previous)) : null;
+    const receivedAt = context.receivedAt || isoNow(now);
+    const cardId = `mc:${normalizedCard.id}`;
 
     if (previousFingerprint === nextFingerprint) {
+      appendAuditEvent(
+        "mission-control.linear.card-observed",
+        {
+          action: "noop",
+          state: normalizedCard.state?.name || null,
+          projectSlug: normalizedCard.project?.slug || null,
+          updatedAt: normalizedCard.updatedAt,
+        },
+        {
+          occurredAt: receivedAt,
+          source: context.source || "poller",
+          cardId,
+          issueId: normalizedCard.id,
+          identifier: normalizedCard.identifier,
+          deliveryId: context.deliveryId || null,
+        },
+      );
+      persistSnapshot();
+      emitChange({
+        type: "card-observed",
+        source: context.source || null,
+        cardId,
+        issueId: normalizedCard.id,
+      });
       return {
         changed: false,
         action: "noop",
@@ -267,7 +390,6 @@ function createLinearSyncStore({
       };
     }
 
-    const receivedAt = context.receivedAt || isoNow(now);
     const action = previous ? "updated" : "created";
     const card = {
       ...(previous || {}),
@@ -279,26 +401,59 @@ function createLinearSyncStore({
     };
 
     snapshot.cards[card.id] = card;
-    appendEvent({
-      type: "mission-control.linear.card-upserted",
-      action,
-      timestamp: receivedAt,
-      source: context.source || "poller",
-      deliveryId: context.deliveryId || null,
-      cardId: card.id,
-      identifier: card.identifier,
-      updatedAt: card.updatedAt,
-      projectSlug: card.project?.slug || null,
-      state: card.state?.name || null,
-    });
+    appendAuditEvent(
+      "mission-control.linear.card-upserted",
+      {
+        action,
+        card,
+      },
+      {
+        occurredAt: receivedAt,
+        source: context.source || "poller",
+        cardId,
+        issueId: card.id,
+        identifier: card.identifier,
+        deliveryId: context.deliveryId || null,
+      },
+    );
     persistSnapshot();
-    emitChange({ type: "card-upserted", action, card, context });
+    emitChange({
+      type: "card-upserted",
+      source: context.source || null,
+      cardId: card.id,
+      issueId: normalizedCard.id,
+      action,
+    });
 
     return {
       changed: true,
       action,
       card,
     };
+  }
+
+  function getTimelineForCard(reference = {}) {
+    const wantedCardIds = new Set(
+      [reference.cardId, reference.issueId ? `mc:${reference.issueId}` : null].filter(Boolean),
+    );
+    const wantedIssueIds = new Set([reference.issueId].filter(Boolean));
+    const wantedIdentifiers = new Set([reference.identifier].filter(Boolean));
+
+    return readEventLog().filter((event) => {
+      if (event.type.startsWith("mission-control.linear.reconcile.")) {
+        return true;
+      }
+      if (wantedCardIds.size > 0 && wantedCardIds.has(event.cardId)) {
+        return true;
+      }
+      if (wantedIssueIds.size > 0 && wantedIssueIds.has(event.issueId)) {
+        return true;
+      }
+      if (wantedIdentifiers.size > 0 && wantedIdentifiers.has(event.identifier)) {
+        return true;
+      }
+      return false;
+    });
   }
 
   function getPublicState() {
@@ -326,13 +481,20 @@ function createLinearSyncStore({
   }
 
   return {
+    appendAuditEvent,
     getSnapshot,
     getPublicState,
+    getTimelineForCard,
     hasSeenWebhookDelivery,
     noteWebhookDelivery,
+    readEventLog,
     updateSync,
     upsertCard,
   };
 }
 
-module.exports = { createLinearSyncStore, normalizeCard };
+module.exports = {
+  atomicWriteJson,
+  createLinearSyncStore,
+  normalizeCard,
+};

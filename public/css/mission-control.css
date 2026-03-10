@@ -1,0 +1,316 @@
+:root {
+  --mc-bg: #0d1117;
+  --mc-card: #161b22;
+  --mc-border: #30363d;
+  --mc-text: #c9d1d9;
+  --mc-muted: #8b949e;
+  --mc-accent: #58a6ff;
+  --mc-green: #3fb950;
+  --mc-yellow: #d29922;
+  --mc-red: #f85149;
+  --mc-purple: #a371f7;
+}
+
+body.mission-control-page {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  background: var(--mc-bg);
+  color: var(--mc-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.mission-control-page .main-wrapper {
+  flex: 1;
+  margin-left: 220px;
+  min-height: 100vh;
+  transition: margin-left 0.2s ease;
+}
+
+.mission-control-page .main-wrapper.sidebar-collapsed {
+  margin-left: 56px;
+}
+
+.mc-shell {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.mc-header,
+.mc-panel,
+.mc-stat,
+.mc-table-shell,
+.mc-detail-card,
+.mc-runbook-card {
+  background: var(--mc-card);
+  border: 1px solid var(--mc-border);
+  border-radius: 12px;
+}
+
+.mc-header {
+  padding: 20px 24px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.mc-title h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.mc-title p {
+  margin: 8px 0 0;
+  color: var(--mc-muted);
+}
+
+.mc-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mc-button,
+.mc-view-button {
+  border: 1px solid var(--mc-border);
+  background: transparent;
+  color: var(--mc-text);
+  border-radius: 999px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.mc-button:hover,
+.mc-view-button:hover {
+  background: rgba(88, 166, 255, 0.12);
+  border-color: var(--mc-accent);
+}
+
+.mc-view-button.active {
+  background: rgba(88, 166, 255, 0.16);
+  border-color: var(--mc-accent);
+  color: var(--mc-accent);
+}
+
+.mc-status-pill,
+.mc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  border: 1px solid var(--mc-border);
+  color: var(--mc-text);
+}
+
+.mc-status-pill.ok,
+.mc-chip.status-completed {
+  border-color: rgba(63, 185, 80, 0.5);
+  color: var(--mc-green);
+}
+
+.mc-status-pill.error,
+.mc-chip.status-blocked,
+.mc-chip.divergence-state_write,
+.mc-chip.divergence-poll {
+  border-color: rgba(248, 81, 73, 0.45);
+  color: var(--mc-red);
+}
+
+.mc-status-pill.syncing,
+.mc-chip.status-awaiting_review,
+.mc-chip.divergence-webhook {
+  border-color: rgba(210, 153, 34, 0.45);
+  color: var(--mc-yellow);
+}
+
+.mc-status-pill.disabled,
+.mc-status-pill.idle,
+.mc-chip.status-new,
+.mc-chip.status-ready,
+.mc-chip.status-in_progress,
+.mc-chip.status-cancelled {
+  border-color: rgba(163, 113, 247, 0.45);
+  color: var(--mc-purple);
+}
+
+.mc-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.mc-stat {
+  padding: 18px;
+}
+
+.mc-stat-label {
+  color: var(--mc-muted);
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+}
+
+.mc-stat-value {
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+.mc-stat-help {
+  margin-top: 8px;
+  color: var(--mc-muted);
+  font-size: 0.82rem;
+}
+
+.mc-panel {
+  padding: 18px;
+}
+
+.mc-panel h2,
+.mc-detail-card h2,
+.mc-runbook-card h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.mc-view-list {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mc-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr);
+  gap: 18px;
+}
+
+.mc-table-shell {
+  overflow: hidden;
+}
+
+.mc-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.mc-table th,
+.mc-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--mc-border);
+  vertical-align: top;
+  text-align: left;
+}
+
+.mc-table th {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  color: var(--mc-muted);
+  letter-spacing: 0.04em;
+}
+
+.mc-table tbody tr {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.mc-table tbody tr:hover,
+.mc-table tbody tr.selected {
+  background: rgba(88, 166, 255, 0.08);
+}
+
+.mc-issue-title {
+  font-weight: 600;
+}
+
+.mc-issue-meta,
+.mc-muted {
+  color: var(--mc-muted);
+  font-size: 0.84rem;
+}
+
+.mc-detail-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.mc-detail-card,
+.mc-runbook-card {
+  padding: 18px;
+}
+
+.mc-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mc-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mc-list-item {
+  border: 1px solid var(--mc-border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.mc-list-item strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.mc-runbook-links {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mc-runbook-links a {
+  color: var(--mc-accent);
+  text-decoration: none;
+}
+
+.mc-runbook-links a:hover {
+  text-decoration: underline;
+}
+
+.mc-empty {
+  color: var(--mc-muted);
+  padding: 18px;
+}
+
+@media (max-width: 1100px) {
+  .mc-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 800px) {
+  .mission-control-page .main-wrapper {
+    margin-left: 0;
+  }
+
+  .mc-shell {
+    padding: 16px;
+  }
+
+  .mc-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
