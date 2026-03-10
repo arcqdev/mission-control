@@ -90,6 +90,7 @@ const { createStateModule } = require("./state");
 // CONFIGURATION
 // ============================================================================
 const PORT = CONFIG.server.port;
+const HOST = CONFIG.server.host;
 const DASHBOARD_DIR = path.join(__dirname, "../public");
 const PATHS = CONFIG.paths;
 
@@ -627,9 +628,10 @@ const server = http.createServer((req, res) => {
 // ============================================================================
 // START SERVER
 // ============================================================================
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const profile = process.env.OPENCLAW_PROFILE;
-  console.log(`\u{1F99E} OpenClaw Command Center running at http://localhost:${PORT}`);
+  const displayHost = HOST === "0.0.0.0" || HOST === "::" ? "localhost" : HOST;
+  console.log(`\u{1F99E} OpenClaw Command Center running at http://${displayHost}:${PORT}`);
   if (profile) {
     console.log(`   Profile: ${profile} (~/.openclaw-${profile})`);
   }
