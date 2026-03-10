@@ -23,6 +23,15 @@ function createState() {
         estimate: 3,
         state: { name: "In Progress", type: "started", color: "#ffcc00" },
         project: { id: "project-1", name: "Mission Control", slug: "mission-control" },
+        lane: "lane:jon",
+        projectKey: "mission-control",
+        healthStrip: {
+          status: "ok",
+          degraded: false,
+          blocked: false,
+          stale: false,
+          risk: "low",
+        },
         team: { id: "team-1", key: "ARC", name: "ArcQ Dev" },
         assignee: { id: "user-1", name: "Kerrigan", email: "queen@example.com" },
         labels: [{ id: "label-1", name: "api", color: "#ff00ff" }],
@@ -37,15 +46,65 @@ function createState() {
         estimate: null,
         state: { name: "Todo", type: "unstarted", color: "#999999" },
         project: { id: "project-1", name: "Mission Control", slug: "mission-control" },
+        lane: "lane:jon",
+        projectKey: "mission-control",
+        healthStrip: {
+          status: "degraded",
+          degraded: true,
+          blocked: true,
+          stale: true,
+          risk: "high",
+        },
         team: { id: "team-1", key: "ARC", name: "ArcQ Dev" },
         assignee: null,
         labels: [{ id: "label-2", name: "sse", color: "#00ccff" }],
         cycle: null,
       },
     ],
+    projects: [
+      {
+        key: "mission-control",
+        lane: "lane:jon",
+        cardCount: 2,
+        symphony: {
+          endpoint: "http://127.0.0.1:45123/health",
+          status: "unreachable",
+          queue: { active: 0, pending: 2, depth: 2 },
+        },
+        healthStrip: {
+          status: "degraded",
+          degraded: true,
+          risk: "high",
+          staleCardCount: 1,
+          blockedCardCount: 1,
+          highRiskCardCount: 1,
+        },
+      },
+    ],
+    lanes: [
+      {
+        lane: "lane:jon",
+        cardCount: 2,
+        projectCount: 1,
+        staleCardCount: 1,
+        highRiskCardCount: 1,
+        degradedProjectCount: 1,
+        status: "degraded",
+      },
+    ],
+    runtime: {
+      provider: "symphony",
+      updatedAt: "2026-03-10T00:05:00.000Z",
+      projectCount: 1,
+      degradedProjectCount: 1,
+    },
     stats: {
       totalCards: 2,
       eventCount: 4,
+      staleCards: 1,
+      highRiskCards: 1,
+      projectCount: 1,
+      laneCount: 1,
     },
     sync: {
       status: "ok",
@@ -77,6 +136,7 @@ describe("Mission Control API payload builders", () => {
 
     assert.strictEqual(payload.version, 1);
     assert.strictEqual(payload.masterCards.length, 2);
+    assert.strictEqual(payload.projects.length, 1);
     assert.strictEqual(payload.stats.totalCards, 2);
     assert.strictEqual(payload.stats.projectCount, 1);
     assert.strictEqual(payload.sync.status, "ok");
@@ -96,14 +156,45 @@ describe("Mission Control API payload builders", () => {
     );
     assert.strictEqual(payload.filters.assignees[0].email, "queen@example.com");
     assert.deepStrictEqual(
+      payload.filters.lanes.map((item) => item.label),
+      ["lane:jon"],
+    );
+    assert.deepStrictEqual(
       payload.filters.labels.map((item) => item.label),
       ["api", "sse"],
     );
   });
 
+  it("surfaces degraded Symphony runtime in health payload", () => {
+    const payload = buildHealthPayload(createState());
+
+    assert.strictEqual(payload.health.status, "degraded");
+    assert.strictEqual(payload.health.runtime.degradedProjectCount, 1);
+    assert.strictEqual(payload.health.runtime.projects[0].lane, "lane:jon");
+    assert.strictEqual(payload.health.runtime.projects[0].status, "degraded");
+  });
+
   it("marks health as stale when lag breaches threshold", () => {
     const payload = buildHealthPayload({
       ...createState(),
+      projects: [
+        {
+          ...createState().projects[0],
+          healthStrip: {
+            ...createState().projects[0].healthStrip,
+            status: "ok",
+            degraded: false,
+          },
+          symphony: {
+            ...createState().projects[0].symphony,
+            status: "healthy",
+          },
+        },
+      ],
+      runtime: {
+        ...createState().runtime,
+        degradedProjectCount: 0,
+      },
       sync: {
         ...createState().sync,
         lagMs: 400000,
@@ -143,5 +234,16 @@ describe("Mission Control API payload builders", () => {
     assert.strictEqual(deltaPayload.delta.identifier, "ARC-26");
     assert.strictEqual(replayPayload.type, "replay");
     assert.strictEqual(replayPayload.board.masterCards.length, 2);
+  });
+
+  it("emits runtime delta payloads for operator health strips", () => {
+    const runtimePayload = buildMissionControlEventPayload(
+      { type: "runtime-updated" },
+      createState(),
+    );
+
+    assert.strictEqual(runtimePayload.type, "runtime-updated");
+    assert.strictEqual(runtimePayload.delta.projects[0].lane, "lane:jon");
+    assert.strictEqual(runtimePayload.delta.projects[0].status, "degraded");
   });
 });

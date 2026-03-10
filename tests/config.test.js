@@ -167,6 +167,29 @@ describe("config module", () => {
       ]);
       assert.strictEqual(config.integrations.linear.enabled, true);
     });
+
+    it("MISSION_CONTROL_PROJECTS_JSON env var parses the project registry", () => {
+      process.env.MISSION_CONTROL_PROJECTS_JSON = JSON.stringify([
+        {
+          key: "mission-control",
+          linearProjectSlug: "mission-control",
+          lane: "lane:jon",
+          symphonyPort: 45123,
+        },
+      ]);
+
+      for (const key of Object.keys(require.cache)) {
+        if (key.includes("config.js")) {
+          delete require.cache[key];
+        }
+      }
+
+      const { loadConfig } = require("../src/config");
+      const config = loadConfig();
+
+      assert.strictEqual(config.missionControl.projects[0].lane, "lane:jon");
+      assert.strictEqual(config.missionControl.projects[0].symphonyPort, 45123);
+    });
   });
 });
 

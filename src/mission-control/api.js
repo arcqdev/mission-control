@@ -20,9 +20,15 @@ function countBy(items, getKey) {
 
 function normalizeMissionControlState(publicState = {}) {
   const masterCards = Array.isArray(publicState.masterCards) ? publicState.masterCards : [];
+  const projects = Array.isArray(publicState.projects) ? publicState.projects : [];
+  const lanes = Array.isArray(publicState.lanes) ? publicState.lanes : [];
   const stats = {
     totalCards: Number(publicState.stats?.totalCards || masterCards.length),
     eventCount: Number(publicState.stats?.eventCount || 0),
+    staleCards: Number(publicState.stats?.staleCards || 0),
+    highRiskCards: Number(publicState.stats?.highRiskCards || 0),
+    projectCount: Number(publicState.stats?.projectCount || projects.length),
+    laneCount: Number(publicState.stats?.laneCount || lanes.length),
   };
   const sync = {
     status: publicState.sync?.status || "idle",
@@ -56,6 +62,14 @@ function normalizeMissionControlState(publicState = {}) {
   return {
     updatedAt: publicState.updatedAt || sync.lastSuccessfulAt || null,
     masterCards,
+    projects,
+    lanes,
+    runtime: publicState.runtime || {
+      provider: "symphony",
+      updatedAt: null,
+      projectCount: projects.length,
+      degradedProjectCount: 0,
+    },
     stats,
     sync,
   };
@@ -83,9 +97,14 @@ function buildBoardPayload(publicState, now = Date.now) {
     generatedAt: isoNow(now),
     updatedAt: state.updatedAt,
     masterCards: cards,
+    projects: state.projects,
+    lanes: state.lanes,
+    runtime: state.runtime,
     stats: {
       ...state.stats,
-      projectCount: uniqueCount(cards.map((card) => card.project?.slug || card.project?.name)),
+      projectCount:
+        state.projects.length ||
+        uniqueCount(cards.map((card) => card.project?.slug || card.project?.name)),
       teamCount: uniqueCount(cards.map((card) => card.team?.key || card.team?.name)),
       stateCount: uniqueCount(cards.map((card) => card.state?.name)),
       assigneeCount: uniqueCount(cards.map((card) => card.assignee?.email || card.assignee?.name)),
@@ -101,6 +120,7 @@ function buildFiltersPayload(publicState, now = Date.now) {
   const projectCounts = countBy(cards, (card) => card.project?.slug || card.project?.name);
   const teamCounts = countBy(cards, (card) => card.team?.key || card.team?.name);
   const stateCounts = countBy(cards, (card) => card.state?.name);
+  const laneCounts = countBy(cards, (card) => card.lane);
   const assigneeCounts = countBy(cards, (card) => card.assignee?.email || card.assignee?.name);
   const labelCounts = new Map();
   const priorityCounts = countBy(cards, (card) => String(card.priority ?? "unassigned"));
@@ -147,6 +167,13 @@ function buildFiltersPayload(publicState, now = Date.now) {
             count,
           };
         })
+        .sort((left, right) => left.label.localeCompare(right.label)),
+      lanes: Array.from(laneCounts.entries())
+        .map(([key, count]) => ({
+          key,
+          label: key,
+          count,
+        }))
         .sort((left, right) => left.label.localeCompare(right.label)),
       states: Array.from(stateCounts.entries())
         .map(([key, count]) => {
@@ -218,6 +245,7 @@ function buildHealthPayload(publicState, now = Date.now) {
   const sync = state.sync;
   const lag = getLagSummary(sync);
   const cards = state.masterCards;
+  const degradedProjects = state.projects.filter((project) => project.healthStrip?.degraded).length;
   const countsByStateType = cards.reduce((result, card) => {
     const key = card.state?.type || "unknown";
     result[key] = (result[key] || 0) + 1;
@@ -233,6 +261,9 @@ function buildHealthPayload(publicState, now = Date.now) {
   } else if (sync.status === "error") {
     status = "error";
     summary = sync.lastError || "Mission Control sync is reporting an error.";
+  } else if (degradedProjects > 0) {
+    status = "degraded";
+    summary = `Symphony runtime is degraded for ${degradedProjects} configured project(s).`;
   } else if (lag.isStale) {
     status = "stale";
     summary = "Mission Control data is older than the configured stale threshold.";
@@ -261,6 +292,20 @@ function buildHealthPayload(publicState, now = Date.now) {
         lastSuccessfulAt: sync.lastSuccessfulAt,
         lastAttemptedAt: sync.lastAttemptedAt,
         lastError: sync.lastError,
+      },
+      runtime: {
+        provider: state.runtime.provider || "symphony",
+        updatedAt: state.runtime.updatedAt || null,
+        projectCount: state.projects.length,
+        degradedProjectCount: degradedProjects,
+        projects: state.projects.map((project) => ({
+          key: project.key,
+          lane: project.lane,
+          status: project.healthStrip?.status || "ok",
+          risk: project.healthStrip?.risk || "low",
+          degraded: Boolean(project.healthStrip?.degraded),
+          symphony: project.symphony || null,
+        })),
       },
     },
   };
@@ -331,6 +376,16 @@ function buildMissionControlEventPayload(change, publicState, now = Date.now) {
     payload.delta = {
       deliveryId: change.deliveryId || null,
       receivedAt: change.receivedAt || null,
+    };
+  } else if (change?.type === "runtime-updated") {
+    payload.delta = {
+      runtime: state.runtime,
+      projects: state.projects.map((project) => ({
+        key: project.key,
+        lane: project.lane,
+        status: project.healthStrip?.status || "ok",
+        risk: project.healthStrip?.risk || "low",
+      })),
     };
   } else if (change?.type === "replay") {
     payload.board = buildBoardPayload(state, now);

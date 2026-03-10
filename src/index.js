@@ -93,7 +93,7 @@ const {
   buildMissionControlEventPayload,
   buildSyncPayload,
 } = require("./mission-control/api");
-const { createLinearSyncEngine } = require("./mission-control/linear");
+const { createMissionControlService } = require("./mission-control");
 
 // ============================================================================
 // CONFIGURATION
@@ -116,8 +116,8 @@ const DATA_DIR = path.join(getOpenClawDir(), "command-center", "data");
 const LEGACY_DATA_DIR = path.join(DASHBOARD_DIR, "data");
 let lastMissionControlEventAt = null;
 let lastMissionControlReplayAt = null;
-const LINEAR_SYNC = createLinearSyncEngine({
-  config: CONFIG.integrations.linear,
+const MISSION_CONTROL = createMissionControlService({
+  config: CONFIG,
   dataDir: DATA_DIR,
   onStateChange: (change) => {
     if (typeof state?.invalidateStateCache === "function") {
@@ -129,7 +129,7 @@ const LINEAR_SYNC = createLinearSyncEngine({
     }
 
     lastMissionControlEventAt = new Date().toISOString();
-    const publicState = change?.publicState || LINEAR_SYNC.getPublicState();
+    const publicState = change?.publicState || MISSION_CONTROL.getPublicState();
     broadcastSSE("mission-control", buildMissionControlEventPayload(change, publicState));
   },
 });
@@ -171,7 +171,7 @@ function replayMissionControlState(reason = "manual-replay") {
     state.invalidateStateCache();
   }
 
-  const publicState = LINEAR_SYNC.getPublicState();
+  const publicState = MISSION_CONTROL.getPublicState();
   const replayedAt = new Date().toISOString();
   lastMissionControlEventAt = replayedAt;
   lastMissionControlReplayAt = replayedAt;
@@ -193,7 +193,7 @@ function replayMissionControlState(reason = "manual-replay") {
 }
 
 function handleMissionControlApi(req, res, pathname) {
-  const publicState = LINEAR_SYNC.getPublicState();
+  const publicState = MISSION_CONTROL.getPublicState();
 
   if (pathname === "/api/mission-control" || pathname === "/api/mission-control/board") {
     if (req.method !== "GET") {
@@ -246,7 +246,7 @@ function handleMissionControlApi(req, res, pathname) {
       return true;
     }
 
-    LINEAR_SYNC.reconcile({ reason: "manual-admin" })
+    MISSION_CONTROL.reconcile({ reason: "manual-admin" })
       .then((nextState) => {
         if (typeof state.invalidateStateCache === "function") {
           state.invalidateStateCache();
@@ -315,7 +315,7 @@ const state = createStateModule({
   runOpenClaw,
   extractJSON,
   readTranscript: (sessionId) => sessions.readTranscript(sessionId),
-  getMissionControlState: () => LINEAR_SYNC.getPublicState(),
+  getMissionControlState: () => MISSION_CONTROL.getPublicState(),
 });
 
 // ============================================================================
@@ -325,7 +325,7 @@ process.nextTick(() => migrateDataDir(DATA_DIR, LEGACY_DATA_DIR));
 startOperatorsRefresh(DATA_DIR, getOpenClawDir);
 startLlmUsageRefresh();
 startTokenUsageRefresh(getOpenClawDir);
-LINEAR_SYNC.start();
+MISSION_CONTROL.start();
 
 // ============================================================================
 // STATIC FILE SERVER
@@ -536,13 +536,13 @@ const server = http.createServer((req, res) => {
     const result = executeAction(action, { runOpenClaw, extractJSON, PORT });
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(result, null, 2));
-  } else if (pathname === LINEAR_SYNC.getWebhookPath() && req.method === "POST") {
+  } else if (pathname === MISSION_CONTROL.getWebhookPath() && req.method === "POST") {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
     });
     req.on("end", async () => {
-      const result = await LINEAR_SYNC.handleWebhook({ headers: req.headers, rawBody: body });
+      const result = await MISSION_CONTROL.handleWebhook({ headers: req.headers, rawBody: body });
       res.writeHead(result.statusCode, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result.body, null, 2));
     });
@@ -812,7 +812,7 @@ function shutdownServer() {
   }
 
   shuttingDown = true;
-  LINEAR_SYNC.stop();
+  MISSION_CONTROL.stop();
 
   const forceExitTimer = setTimeout(() => process.exit(0), 5000);
   forceExitTimer.unref?.();

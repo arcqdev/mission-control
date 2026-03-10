@@ -198,6 +198,24 @@ function parseList(value) {
     .filter(Boolean);
 }
 
+function parseJsonArray(value, fallback = []) {
+  if (!value) {
+    return fallback;
+  }
+
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  try {
+    const parsed = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch (error) {
+    console.warn("[Config] Failed to parse JSON array:", error.message);
+    return fallback;
+  }
+}
+
 /**
  * Build final configuration
  */
@@ -291,6 +309,19 @@ function loadConfig() {
         webhookSecret:
           process.env.LINEAR_WEBHOOK_SECRET || fileConfig.integrations?.linear?.webhookSecret,
       },
+    },
+
+    missionControl: {
+      projects: parseJsonArray(
+        process.env.MISSION_CONTROL_PROJECTS_JSON,
+        fileConfig.missionControl?.projects || [],
+      ),
+      symphonyPollIntervalMs: parseInt(
+        process.env.MISSION_CONTROL_SYMPHONY_POLL_INTERVAL_MS ||
+          fileConfig.missionControl?.symphonyPollIntervalMs ||
+          "30000",
+        10,
+      ),
     },
 
     // Billing - for cost savings calculation
