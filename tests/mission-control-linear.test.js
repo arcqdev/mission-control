@@ -88,6 +88,61 @@ describe("Mission Control Linear store", () => {
 });
 
 describe("Mission Control Linear sync engine", () => {
+  it("converges on fresh boot and schedules the 2-minute reconcile poller", async () => {
+    const dataDir = createTempDir();
+    const now = () => Date.parse("2026-03-10T00:00:00.000Z");
+    let fetchCalls = 0;
+    let scheduledIntervalMs = null;
+    let pollTick = null;
+    let resolveFetch;
+
+    const engine = createLinearSyncEngine({
+      config: {
+        enabled: true,
+        apiKey: "linear-key",
+        projectSlugs: ["mission-control"],
+        syncIntervalMs: 120000,
+        reconcileOverlapMs: 300000,
+        webhookPath: "/api/integrations/linear/webhook",
+        webhookSecret: null,
+      },
+      dataDir,
+      now,
+      client: {
+        fetchIssuesForProjects: async () => {
+          fetchCalls += 1;
+          return new Promise((resolve) => {
+            resolveFetch = () => resolve([createIssue()]);
+          });
+        },
+      },
+      setIntervalFn: (fn, ms) => {
+        pollTick = fn;
+        scheduledIntervalMs = ms;
+        return 1;
+      },
+      clearIntervalFn: () => {},
+      setTimeoutFn: () => 1,
+      clearTimeoutFn: () => {},
+    });
+
+    engine.start();
+
+    assert.strictEqual(fetchCalls, 1);
+    assert.strictEqual(scheduledIntervalMs, 120000);
+    assert.strictEqual(typeof pollTick, "function");
+
+    resolveFetch();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const state = engine.getPublicState();
+    assert.strictEqual(state.stats.totalCards, 1);
+    assert.strictEqual(state.masterCards[0].identifier, "ARC-32");
+    assert.strictEqual(state.sync.status, "ok");
+    assert.strictEqual(state.sync.lastReason, "startup");
+    assert.strictEqual(state.sync.pollIntervalMs, 120000);
+  });
+
   it("deduplicates duplicate webhook deliveries while keeping one card", async () => {
     const dataDir = createTempDir();
     const currentTime = Date.parse("2026-03-10T00:00:00.000Z");
