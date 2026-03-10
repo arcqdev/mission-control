@@ -150,5 +150,59 @@ describe("config module", () => {
       const config = loadConfig();
       assert.strictEqual(config.auth.mode, "token");
     });
+
+    it("LINEAR_PROJECT_SLUGS env var parses into project slugs", () => {
+      process.env.LINEAR_API_KEY = "linear-key";
+      process.env.LINEAR_PROJECT_SLUGS = "mission-control, command-center ";
+      for (const key of Object.keys(require.cache)) {
+        if (key.includes("config.js")) {
+          delete require.cache[key];
+        }
+      }
+      const { loadConfig } = require("../src/config");
+      const config = loadConfig();
+      assert.deepStrictEqual(config.integrations.linear.projectSlugs, [
+        "mission-control",
+        "command-center",
+      ]);
+      assert.strictEqual(config.integrations.linear.enabled, true);
+    });
+  });
+});
+
+describe("Mission Control auth posture", () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) {
+        delete process.env[key];
+      }
+    }
+    Object.assign(process.env, originalEnv);
+
+    for (const key of Object.keys(require.cache)) {
+      if (key.includes("config.js")) {
+        delete require.cache[key];
+      }
+    }
+  });
+
+  it("adds the Linear webhook path to public paths when a secret is configured", () => {
+    process.env.LINEAR_WEBHOOK_SECRET = "zerg-rush";
+    process.env.LINEAR_WEBHOOK_PATH = "/api/integrations/linear/custom-webhook";
+
+    const { loadConfig } = require("../src/config");
+    const config = loadConfig();
+
+    assert.ok(config.auth.publicPaths.includes("/api/integrations/linear/custom-webhook"));
+  });
+
+  it("keeps Mission Control read and admin APIs behind normal auth", () => {
+    const { loadConfig } = require("../src/config");
+    const config = loadConfig();
+
+    assert.ok(!config.auth.publicPaths.includes("/api/mission-control/board"));
+    assert.ok(!config.auth.publicPaths.includes("/api/mission-control/admin/reconcile"));
   });
 });

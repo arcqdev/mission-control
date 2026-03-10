@@ -85,6 +85,15 @@ const { getLlmUsage, getRoutingStats, startLlmUsageRefresh } = require("./llm-us
 const { executeAction } = require("./actions");
 const { migrateDataDir } = require("./data");
 const { createStateModule } = require("./state");
+const {
+  buildAdminStatusPayload,
+  buildBoardPayload,
+  buildFiltersPayload,
+  buildHealthPayload,
+  buildMissionControlEventPayload,
+  buildSyncPayload,
+} = require("./mission-control/api");
+const { createLinearSyncEngine } = require("./mission-control/linear");
 
 // ============================================================================
 // CONFIGURATION
@@ -105,6 +114,25 @@ const AUTH_CONFIG = {
 // Profile-aware data directory
 const DATA_DIR = path.join(getOpenClawDir(), "command-center", "data");
 const LEGACY_DATA_DIR = path.join(DASHBOARD_DIR, "data");
+let lastMissionControlEventAt = null;
+let lastMissionControlReplayAt = null;
+const LINEAR_SYNC = createLinearSyncEngine({
+  config: CONFIG.integrations.linear,
+  dataDir: DATA_DIR,
+  onStateChange: (change) => {
+    if (typeof state?.invalidateStateCache === "function") {
+      state.invalidateStateCache();
+    }
+
+    if (sseClients.size === 0) {
+      return;
+    }
+
+    lastMissionControlEventAt = new Date().toISOString();
+    const publicState = change?.publicState || LINEAR_SYNC.getPublicState();
+    broadcastSSE("mission-control", buildMissionControlEventPayload(change, publicState));
+  },
+});
 
 // ============================================================================
 // SSE (Server-Sent Events)
@@ -123,6 +151,140 @@ function broadcastSSE(event, data) {
   for (const client of sseClients) {
     sendSSE(client, event, data);
   }
+}
+
+function writeJson(res, statusCode, payload) {
+  res.writeHead(statusCode, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(payload, null, 2));
+}
+
+function getMissionControlAdminMeta() {
+  return {
+    sseClientCount: sseClients.size,
+    lastReplayAt: lastMissionControlReplayAt,
+    lastMissionControlEventAt,
+  };
+}
+
+function replayMissionControlState(reason = "manual-replay") {
+  if (typeof state.invalidateStateCache === "function") {
+    state.invalidateStateCache();
+  }
+
+  const publicState = LINEAR_SYNC.getPublicState();
+  const replayedAt = new Date().toISOString();
+  lastMissionControlEventAt = replayedAt;
+  lastMissionControlReplayAt = replayedAt;
+
+  if (sseClients.size > 0) {
+    broadcastSSE(
+      "mission-control",
+      buildMissionControlEventPayload({ type: "replay", reason }, publicState),
+    );
+    broadcastSSE("update", state.refreshState());
+  }
+
+  return {
+    replayedAt,
+    sseClientCount: sseClients.size,
+    board: buildBoardPayload(publicState),
+    sync: buildSyncPayload(publicState).sync,
+  };
+}
+
+function handleMissionControlApi(req, res, pathname) {
+  const publicState = LINEAR_SYNC.getPublicState();
+
+  if (pathname === "/api/mission-control" || pathname === "/api/mission-control/board") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+    writeJson(res, 200, buildBoardPayload(publicState));
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/filters") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+    writeJson(res, 200, buildFiltersPayload(publicState));
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/health") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+    writeJson(res, 200, buildHealthPayload(publicState));
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/sync") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+    writeJson(res, 200, buildSyncPayload(publicState));
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/admin/status") {
+    if (req.method !== "GET") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+    writeJson(res, 200, buildAdminStatusPayload(publicState, getMissionControlAdminMeta()));
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/admin/reconcile") {
+    if (req.method !== "POST") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+
+    LINEAR_SYNC.reconcile({ reason: "manual-admin" })
+      .then((nextState) => {
+        if (typeof state.invalidateStateCache === "function") {
+          state.invalidateStateCache();
+        }
+
+        writeJson(res, 200, {
+          ok: true,
+          triggeredAt: new Date().toISOString(),
+          board: buildBoardPayload(nextState),
+          sync: buildSyncPayload(nextState).sync,
+        });
+      })
+      .catch((error) => {
+        writeJson(res, 500, { error: error.message });
+      });
+
+    return true;
+  }
+
+  if (pathname === "/api/mission-control/admin/replay") {
+    if (req.method !== "POST") {
+      writeJson(res, 405, { error: "Method not allowed" });
+      return true;
+    }
+
+    writeJson(res, 200, {
+      ok: true,
+      ...replayMissionControlState("manual-admin"),
+    });
+    return true;
+  }
+
+  if (pathname.startsWith("/api/mission-control/")) {
+    writeJson(res, 404, { error: "Not found" });
+    return true;
+  }
+
+  return false;
 }
 
 // ============================================================================
@@ -153,6 +315,7 @@ const state = createStateModule({
   runOpenClaw,
   extractJSON,
   readTranscript: (sessionId) => sessions.readTranscript(sessionId),
+  getMissionControlState: () => LINEAR_SYNC.getPublicState(),
 });
 
 // ============================================================================
@@ -162,6 +325,7 @@ process.nextTick(() => migrateDataDir(DATA_DIR, LEGACY_DATA_DIR));
 startOperatorsRefresh(DATA_DIR, getOpenClawDir);
 startLlmUsageRefresh();
 startTokenUsageRefresh(getOpenClawDir);
+LINEAR_SYNC.start();
 
 // ============================================================================
 // STATIC FILE SERVER
@@ -372,6 +536,17 @@ const server = http.createServer((req, res) => {
     const result = executeAction(action, { runOpenClaw, extractJSON, PORT });
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(result, null, 2));
+  } else if (pathname === LINEAR_SYNC.getWebhookPath() && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", async () => {
+      const result = await LINEAR_SYNC.handleWebhook({ headers: req.headers, rawBody: body });
+      res.writeHead(result.statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result.body, null, 2));
+    });
+    return;
   } else if (pathname === "/api/events") {
     // SSE endpoint
     res.writeHead(200, {
@@ -411,6 +586,8 @@ const server = http.createServer((req, res) => {
         2,
       ),
     );
+  } else if (handleMissionControlApi(req, res, pathname)) {
+    return;
   } else if (pathname === "/api/about") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -628,6 +805,27 @@ const server = http.createServer((req, res) => {
 // ============================================================================
 // START SERVER
 // ============================================================================
+let shuttingDown = false;
+function shutdownServer() {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+  LINEAR_SYNC.stop();
+
+  const forceExitTimer = setTimeout(() => process.exit(0), 5000);
+  forceExitTimer.unref?.();
+
+  server.close(() => {
+    clearTimeout(forceExitTimer);
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", shutdownServer);
+process.on("SIGINT", shutdownServer);
+
 server.listen(PORT, HOST, () => {
   const profile = process.env.OPENCLAW_PROFILE;
   const displayHost = HOST === "0.0.0.0" || HOST === "::" ? "localhost" : HOST;

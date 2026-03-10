@@ -185,6 +185,20 @@ function expandPath(p) {
 }
 
 /**
+ * Parse a comma-separated environment variable or array config value.
+ */
+function parseList(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  return String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/**
  * Build final configuration
  */
 function loadConfig() {
@@ -253,9 +267,29 @@ function loadConfig() {
     // Integrations
     integrations: {
       linear: {
-        enabled: !!(process.env.LINEAR_API_KEY || fileConfig.integrations?.linear?.apiKey),
         apiKey: process.env.LINEAR_API_KEY || fileConfig.integrations?.linear?.apiKey,
         teamId: process.env.LINEAR_TEAM_ID || fileConfig.integrations?.linear?.teamId,
+        projectSlugs: parseList(
+          process.env.LINEAR_PROJECT_SLUGS || fileConfig.integrations?.linear?.projectSlugs,
+        ),
+        syncIntervalMs: parseInt(
+          process.env.LINEAR_SYNC_INTERVAL_MS ||
+            fileConfig.integrations?.linear?.syncIntervalMs ||
+            "120000",
+          10,
+        ),
+        reconcileOverlapMs: parseInt(
+          process.env.LINEAR_RECONCILE_OVERLAP_MS ||
+            fileConfig.integrations?.linear?.reconcileOverlapMs ||
+            "300000",
+          10,
+        ),
+        webhookPath:
+          process.env.LINEAR_WEBHOOK_PATH ||
+          fileConfig.integrations?.linear?.webhookPath ||
+          "/api/integrations/linear/webhook",
+        webhookSecret:
+          process.env.LINEAR_WEBHOOK_SECRET || fileConfig.integrations?.linear?.webhookSecret,
       },
     },
 
@@ -269,6 +303,16 @@ function loadConfig() {
     },
   };
 
+  config.integrations.linear.enabled = Boolean(
+    config.integrations.linear.apiKey && config.integrations.linear.projectSlugs.length > 0,
+  );
+
+  if (config.integrations.linear.webhookSecret && config.integrations.linear.webhookPath) {
+    config.auth.publicPaths = [
+      ...new Set([...config.auth.publicPaths, config.integrations.linear.webhookPath]),
+    ];
+  }
+
   return config;
 }
 
@@ -279,4 +323,4 @@ const CONFIG = loadConfig();
 console.log("[Config] Workspace:", CONFIG.paths.workspace);
 console.log("[Config] Auth mode:", CONFIG.auth.mode);
 
-module.exports = { CONFIG, loadConfig, detectWorkspace, expandPath, getOpenClawDir };
+module.exports = { CONFIG, loadConfig, detectWorkspace, expandPath, getOpenClawDir, parseList };

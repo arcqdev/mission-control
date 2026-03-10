@@ -22,6 +22,7 @@ const { formatBytes, formatTimeAgo } = require("./utils");
  * @param {function} deps.runOpenClaw - function from openclaw module
  * @param {function} deps.extractJSON - function from openclaw module
  * @param {function} deps.readTranscript - function from sessions module
+ * @param {function} deps.getMissionControlState - function returning Mission Control state
  */
 function createStateModule(deps) {
   const {
@@ -38,6 +39,7 @@ function createStateModule(deps) {
     runOpenClaw,
     extractJSON,
     readTranscript,
+    getMissionControlState = () => null,
   } = deps;
 
   const PATHS = CONFIG.paths;
@@ -493,6 +495,7 @@ function createStateModule(deps) {
       cron,
       memory,
       cerebro,
+      missionControl: getMissionControlState(),
       subagents,
       pagination: {
         page: 1,
@@ -509,9 +512,13 @@ function createStateModule(deps) {
     return cachedState;
   }
 
+  function invalidateStateCache() {
+    lastStateUpdate = 0;
+  }
+
   // Force refresh the cached state
   function refreshState() {
-    lastStateUpdate = 0;
+    invalidateStateCache();
     return getFullState();
   }
 
@@ -653,6 +660,7 @@ function createStateModule(deps) {
     getCapacity,
     getMemoryStats,
     getFullState,
+    invalidateStateCache,
     refreshState,
     startStateRefresh,
     stopStateRefresh,
