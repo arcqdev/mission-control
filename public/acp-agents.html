@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ACP Agents - OpenClaw Command Center</title>
+    <link rel="stylesheet" href="/css/dashboard.css" />
+    <link rel="stylesheet" href="/css/acp-agents.css" />
+    <script src="/js/i18n.js"></script>
+    <script src="/js/sidebar.js"></script>
+  </head>
+  <body class="acp-page">
+    <div id="sidebar-container"></div>
+    <div class="main-wrapper" id="main-wrapper">
+      <main class="acp-shell">
+        <section class="acp-hero">
+          <div class="acp-hero-copy">
+            <p class="acp-eyebrow">ACP Swarm</p>
+            <h1>OpenClaw ACP agent activity</h1>
+            <p class="acp-subhead">
+              Configured agent roster, routing bindings, model loadouts, auth heartbeat, and live
+              session activity stitched together from local OpenClaw state.
+            </p>
+          </div>
+          <div class="acp-hero-actions">
+            <span class="status-pill connecting" id="acp-connection-status">
+              <span class="pulse"></span>
+              Connecting
+            </span>
+            <button class="btn-secondary" id="acp-refresh-button" type="button">Refresh</button>
+          </div>
+        </section>
+
+        <section class="acp-summary-grid" id="acp-summary"></section>
+
+        <section class="acp-panel">
+          <div class="acp-section-head">
+            <div>
+              <h2>Swarm map</h2>
+              <p>Each card blends configured identity, routing, loadout, and recent heartbeat.</p>
+            </div>
+            <div class="acp-muted" id="acp-generated-at">Waiting for data…</div>
+          </div>
+          <div class="acp-agent-grid" id="acp-agent-grid"></div>
+        </section>
+
+        <section class="acp-column-grid">
+          <section class="acp-panel">
+            <div class="acp-section-head">
+              <div>
+                <h2>Channel mesh</h2>
+                <p>Where the swarm is actually talking right now.</p>
+              </div>
+            </div>
+            <div class="acp-distribution-list" id="acp-channels"></div>
+          </section>
+
+          <section class="acp-panel">
+            <div class="acp-section-head">
+              <div>
+                <h2>Model footprint</h2>
+                <p>Configured defaults plus observed session model usage.</p>
+              </div>
+            </div>
+            <div class="acp-distribution-list" id="acp-models"></div>
+          </section>
+
+          <section class="acp-panel acp-panel-wide">
+            <div class="acp-section-head">
+              <div>
+                <h2>Skill loadout</h2>
+                <p>Skills surfaced by recent session snapshots across the ACP roster.</p>
+              </div>
+            </div>
+            <div class="acp-tag-cloud" id="acp-skills"></div>
+          </section>
+        </section>
+
+        <section class="acp-panel">
+          <div class="acp-section-head">
+            <div>
+              <h2>Recent session matrix</h2>
+              <p>Cross-agent activity feed sorted by newest heartbeat.</p>
+            </div>
+          </div>
+          <div class="acp-table-shell">
+            <table class="acp-table">
+              <thead>
+                <tr>
+                  <th>Agent</th>
+                  <th>Session</th>
+                  <th>Channel</th>
+                  <th>Status</th>
+                  <th>Model</th>
+                  <th>Messages</th>
+                  <th>Tools</th>
+                  <th>Tokens</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="acp-session-table"></tbody>
+            </table>
+            <div class="acp-empty" id="acp-empty-state" hidden>No ACP session activity found.</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/js/acp-agents.js"></script>
+  </body>
+</html>

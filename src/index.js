@@ -84,6 +84,7 @@ const {
 const { getLlmUsage, getRoutingStats, startLlmUsageRefresh } = require("./llm-usage");
 const { executeAction } = require("./actions");
 const { migrateDataDir } = require("./data");
+const { createAcpModule } = require("./acp");
 const { createStateModule } = require("./state");
 const {
   buildAdminStatusPayload,
@@ -403,6 +404,13 @@ const sessions = createSessionsModule({
   extractJSON,
 });
 
+const acp = createAcpModule({
+  getOpenClawDir,
+  runOpenClaw,
+  extractJSON,
+  parseSessionLabel: sessions.parseSessionLabel,
+});
+
 // State module (factory pattern)
 const state = createStateModule({
   CONFIG,
@@ -419,6 +427,7 @@ const state = createStateModule({
   extractJSON,
   readTranscript: (sessionId) => sessions.readTranscript(sessionId),
   getMissionControlState: () => missionControl.getPublicState(),
+  getAcpActivity: () => acp.getAgentActivity(),
 });
 
 // ============================================================================
@@ -631,6 +640,10 @@ const server = http.createServer((req, res) => {
     const data = state.getSubagentStatus();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ subagents: data }, null, 2));
+  } else if (pathname === "/api/acp/agents") {
+    const data = acp.getAgentActivity();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(data, null, 2));
   } else if (pathname === "/api/action") {
     const action = query.get("action");
     if (!action) {

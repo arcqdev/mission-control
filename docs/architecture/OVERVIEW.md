@@ -45,9 +45,9 @@ OpenClaw Command Center is a real-time dashboard for monitoring and managing AI 
 ┌─────────────────────────────────────────────────────────────┐
 │                    Browser (Client)                         │
 ├─────────────────────────────────────────────────────────────┤
-│  index.html          │  jobs.html         │  (future pages) │
-│  ─────────────       │  ─────────────     │                 │
-│  Main Dashboard      │  AI Jobs Dashboard │                 │
+│  index.html          │  jobs.html         │  acp-agents.html │
+│  ─────────────       │  ─────────────     │  ─────────────── │
+│  Main Dashboard      │  AI Jobs Dashboard │  ACP Agent View  │
 └──────────┬───────────┴────────┬──────────┴─────────────────┘
            │                    │
            │  ┌─────────────────┴──────────────────┐
@@ -91,8 +91,9 @@ OpenClaw Command Center is a real-time dashboard for monitoring and managing AI 
 
 | Page         | Purpose            | Key Sections                                                       |
 | ------------ | ------------------ | ------------------------------------------------------------------ |
-| `index.html` | Main dashboard     | Vitals, LLM Usage, Sessions, Cron Jobs, Memory, Cerebro, Operators |
-| `jobs.html`  | AI Jobs management | Job cards, run/pause/history controls                              |
+| `index.html`        | Main dashboard     | Vitals, LLM Usage, Sessions, Cron Jobs, Memory, Cerebro, Operators |
+| `jobs.html`         | AI Jobs management | Job cards, run/pause/history controls                              |
+| `acp-agents.html`   | ACP agent activity | Configured agents, bindings, model/auth summaries, session matrix  |
 
 ### Shared Components
 
@@ -138,6 +139,7 @@ OpenClaw Command Center is a real-time dashboard for monitoring and managing AI 
 | ----------------------- | --------- | --------------------------- |
 | `/api/events`           | GET (SSE) | Real-time state updates     |
 | `/api/state`            | GET       | Full current state snapshot |
+| `/api/acp/agents`       | GET       | ACP agent roster + activity |
 | `/api/sessions`         | GET       | Session list and details    |
 | `/api/jobs`             | GET       | AI job definitions          |
 | `/api/jobs/:id/run`     | POST      | Trigger job execution       |
