@@ -4,7 +4,7 @@
 
 ## Overview
 
-OpenClaw Command Center is a real-time dashboard for monitoring and managing AI assistant orchestration. It provides visibility into sessions, token usage, costs, scheduled jobs, and system health.
+OpenClaw Command Center is a real-time dashboard for monitoring and managing AI assistant orchestration. It provides visibility into sessions, token usage, costs, scheduled jobs, and system health. Mission Control extends the backend foundation with durable cross-project operational state.
 
 ## Core Architecture Principles
 
@@ -126,12 +126,17 @@ OpenClaw Command Center is a real-time dashboard for monitoring and managing AI 
 | OpenClaw Gateway | REST API    | Sessions, token stats, system vitals |
 | Jobs Scheduler   | REST API    | AI job definitions and run history   |
 | Linear           | GraphQL API | Issue tracking integration           |
+| Mission Control  | Local files | Durable cross-project control state  |
 
 ### Configuration (`lib/config.js`)
 
 - Auto-detects OpenClaw installation paths
 - Supports multiple config file locations
 - Environment variable overrides
+
+## Related Documents
+
+- [Mission Control Foundation](./mission-control-foundation.md)
 
 ## API Endpoints
 
@@ -234,3 +239,4 @@ openclaw-command-center/
 2. **Plugin Architecture**: Extensible dashboard sections
 3. **Multi-Gateway**: Support for monitoring multiple OpenClaw instances
 4. **Historical Analytics**: Token usage and cost trends over time
+5. **Mission Control UI**: Operator board and APIs on top of the new durable store

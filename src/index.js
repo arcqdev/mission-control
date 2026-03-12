@@ -86,8 +86,7 @@ const { executeAction } = require("./actions");
 const { migrateDataDir } = require("./data");
 const { createAcpModule } = require("./acp");
 const { createStateModule } = require("./state");
-const { createNotificationsModule } = require("./mission-control/notifications");
-const { handleMissionControlRequest, isMissionControlRoute } = require("./mission-control/routes");
+const { initializeMissionControl } = require("./mission-control");
 
 // ============================================================================
 // CONFIGURATION
@@ -128,6 +127,12 @@ const missionControl = createMissionControlService({
     const publicState = change?.publicState || missionControl.getPublicState();
     broadcastSSE("mission-control", buildMissionControlEventPayload(change, publicState));
   },
+});
+
+initializeMissionControl({
+  dataDir: DATA_DIR,
+  config: CONFIG,
+  logger: console,
 });
 
 // ============================================================================
@@ -1004,31 +1009,9 @@ const server = http.createServer((req, res) => {
 // ============================================================================
 // START SERVER
 // ============================================================================
-let shuttingDown = false;
-function shutdownServer() {
-  if (shuttingDown) {
-    return;
-  }
-
-  shuttingDown = true;
-  missionControl.stop();
-
-  const forceExitTimer = setTimeout(() => process.exit(0), 5000);
-  forceExitTimer.unref?.();
-
-  server.close(() => {
-    clearTimeout(forceExitTimer);
-    process.exit(0);
-  });
-}
-
-process.on("SIGTERM", shutdownServer);
-process.on("SIGINT", shutdownServer);
-
 server.listen(PORT, HOST, () => {
   const profile = process.env.OPENCLAW_PROFILE;
-  const displayHost = HOST === "0.0.0.0" || HOST === "::" ? "localhost" : HOST;
-  console.log(`\u{1F99E} OpenClaw Command Center running at http://${displayHost}:${PORT}`);
+  console.log(`\u{1F99E} OpenClaw Command Center running at http://${HOST}:${PORT}`);
   if (profile) {
     console.log(`   Profile: ${profile} (~/.openclaw-${profile})`);
   }

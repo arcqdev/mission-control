@@ -4,70 +4,31 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { createMissionControlService } = require("../src/mission-control");
-const { createMissionControlViewsStore } = require("../src/mission-control/views");
+const {
+  createMasterCardFromLinearIssue,
+  deriveCardStatus,
+} = require("../src/mission-control/models");
+const { initializeMissionControl } = require("../src/mission-control");
+const { loadMissionControlRegistry } = require("../src/mission-control/registry");
+const {
+  appendEvent,
+  atomicWriteJson,
+  createMissionControlStore,
+  getMissionControlStorePaths,
+  readSnapshot,
+  replayMissionControlEvents,
+} = require("../src/mission-control/store");
 
 const tempDirs = [];
 
-function createTempDir() {
+function createTempDataDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-mission-control-"));
   tempDirs.push(dir);
   return dir;
 }
 
-function createIssue(overrides = {}) {
+function createConfig() {
   return {
-    id: "issue-1",
-    identifier: "ARC-38",
-    title: "Operational hardening",
-    description: "Replay audits and reconcile diagnostics",
-    url: "https://linear.app/arcqdev/issue/ARC-38",
-    priority: 2,
-    estimate: 3,
-    createdAt: "2026-03-10T00:00:00.000Z",
-    updatedAt: "2026-03-10T04:00:00.000Z",
-    state: {
-      id: "state-progress",
-      name: "In Progress",
-      type: "started",
-      color: "#58a6ff",
-    },
-    project: {
-      id: "project-1",
-      name: "Littlebrief",
-      slug: "littlebrief",
-      progress: 40,
-    },
-    team: {
-      id: "team-1",
-      key: "ARC",
-      name: "ArcQ Dev",
-    },
-    assignee: {
-      id: "user-1",
-      name: "Jon",
-      email: "jon@example.com",
-    },
-    labels: [{ id: "label-1", name: "lane:jon", color: "#58a6ff" }],
-    cycle: null,
-    ...overrides,
-  };
-}
-
-function createConfig(overrides = {}) {
-  return {
-    integrations: {
-      linear: {
-        enabled: true,
-        apiKey: "linear-key",
-        projectSlugs: ["littlebrief"],
-        syncIntervalMs: 120000,
-        reconcileOverlapMs: 300000,
-        webhookPath: "/api/integrations/linear/webhook",
-        webhookSecret: "secret",
-        ...(overrides.integrations?.linear || {}),
-      },
-    },
     missionControl: {
       projects: [
         {
@@ -77,18 +38,32 @@ function createConfig(overrides = {}) {
           lane: "lane:jon",
           symphonyPort: 45123,
         },
-        {
-          key: "growth",
-          repoPath: "~/dev/arcqdev/growth",
-          linearProjectSlug: "growth-board",
-          lane: "lane:mia",
-          symphonyPort: null,
-        },
       ],
-      outcomes: overrides.missionControl?.outcomes || [],
-      discordDestinations: overrides.missionControl?.discordDestinations || [],
     },
   };
+}
+
+function createCard(overrides = {}) {
+  return createMasterCardFromLinearIssue(
+    {
+      issue: {
+        id: "lin_123",
+        identifier: "LB-123",
+        title: "Build Mission Control storage",
+        description: "Implement the append-only event log and snapshot store.",
+        state: { type: "started", name: "In Progress" },
+        labels: [
+          { name: "lane:jon" },
+          { name: "risk:high" },
+          { name: "dispatch:blocked" },
+          { name: "external-facing" },
+        ],
+      },
+      project: loadMissionControlRegistry(createConfig(), { now: "2026-03-09T20:00:00.000Z" })
+        .projects[0],
+    },
+    { now: "2026-03-09T20:05:00.000Z" },
+  );
 }
 
 afterEach(() => {
@@ -97,278 +72,276 @@ afterEach(() => {
   }
 });
 
-describe("mission control saved views", () => {
-  it("persists the active saved view across restart", () => {
-    const dataDir = createTempDir();
-    const store = createMissionControlViewsStore({
-      dataDir,
-      now: () => Date.parse("2026-03-10T00:00:00.000Z"),
+describe("mission control registry + models", () => {
+  it("loads a canonical project registry with default agents", () => {
+    const registry = loadMissionControlRegistry(createConfig(), {
+      now: "2026-03-09T20:00:00.000Z",
     });
 
-    store.setActiveView("needs-review");
+    assert.strictEqual(registry.schemaVersion, 1);
+    assert.strictEqual(registry.projectCount, 1);
+    assert.deepStrictEqual(registry.projects[0], {
+      key: "littlebrief",
+      repoPath: "~/dev/arcqdev/littlebrief",
+      linearProjectSlug: "littlebrief",
+      lane: "lane:jon",
+      symphonyPort: 45123,
+      createdAt: "2026-03-09T20:00:00.000Z",
+      updatedAt: "2026-03-09T20:00:00.000Z",
+    });
+    assert.deepStrictEqual(
+      registry.agents.map((agent) => agent.key),
+      ["jon", "mia", "pepper"],
+    );
+  });
 
-    const reloaded = createMissionControlViewsStore({
-      dataDir,
-      now: () => Date.parse("2026-03-10T01:00:00.000Z"),
+  it("derives a master card from a Linear issue with normalized review state", () => {
+    const card = createCard();
+
+    assert.strictEqual(card.id, "mc:lin_123");
+    assert.strictEqual(card.lane, "lane:jon");
+    assert.strictEqual(card.risk, "risk:high");
+    assert.strictEqual(card.dispatch, "dispatch:blocked");
+    assert.strictEqual(card.status, "awaiting_review");
+    assert.strictEqual(card.humanReviewRequired, true);
+    assert.match(card.reviewReason, /risk:high/);
+    assert.match(card.reviewReason, /external-facing/);
+    assert.deepStrictEqual(card.originProjects, ["littlebrief"]);
+    assert.deepStrictEqual(card.repoTargets, ["~/dev/arcqdev/littlebrief"]);
+    assert.deepStrictEqual(card.symphonyTargets, [
+      {
+        projectKey: "littlebrief",
+        port: 45123,
+        probeState: "unknown",
+      },
+    ]);
+  });
+
+  it("applies card status precedence deterministically", () => {
+    const status = deriveCardStatus({
+      issueLifecycles: ["done", "canceled"],
+      humanReviewRequired: true,
+      dependencies: [
+        { kind: "external", id: "x", label: "review", status: "open", blocking: true },
+      ],
+      dispatch: "dispatch:blocked",
     });
 
-    assert.strictEqual(reloaded.getState().activeViewId, "needs-review");
-    assert.ok(reloaded.getState().views.some((view) => view.id === "today"));
+    assert.strictEqual(status, "completed");
+  });
+
+  it("fails bootstrap safely when registry config is invalid", () => {
+    const result = initializeMissionControl({
+      dataDir: createTempDataDir(),
+      config: {
+        missionControl: {
+          projects: [{ key: "broken", linearProjectSlug: "broken", lane: "lane:jon" }],
+        },
+      },
+      logger: { log() {}, error() {} },
+      now: "2026-03-09T20:00:00.000Z",
+    });
+
+    assert.strictEqual(result.ready, false);
+    assert.match(result.error.message, /missing repoPath/);
+    assert.strictEqual(result.store, null);
   });
 });
 
-describe("mission control service", () => {
-  it("replays card timelines and surfaces diagnostics", async () => {
-    const dataDir = createTempDir();
-    let currentTime = Date.parse("2026-03-10T04:00:00.000Z");
-    const now = () => currentTime;
-    const issues = [
-      createIssue(),
-      createIssue({
-        id: "issue-2",
-        identifier: "ARC-99",
-        title: "Needs review",
-        updatedAt: "2026-03-09T00:00:00.000Z",
-        labels: [
-          { id: "label-1", name: "lane:pepper", color: "#d29922" },
-          { id: "label-2", name: "risk:high", color: "#f85149" },
-        ],
-        state: {
-          id: "state-review",
-          name: "In Review",
-          type: "started",
-          color: "#d29922",
-        },
-        project: {
-          id: "project-2",
-          name: "Dispatch",
-          slug: "littlebrief",
-          progress: 10,
-        },
-      }),
-    ];
-
-    const service = createMissionControlService({
-      config: createConfig(),
-      dataDir,
-      now,
-      logger: { error() {}, log() {} },
-      linearClient: {
-        fetchIssuesForProjects: async () => issues,
-      },
-      setIntervalFn: () => 1,
-      clearIntervalFn: () => {},
-      setTimeoutFn: () => 1,
-      clearTimeoutFn: () => {},
+describe("mission control durable store", () => {
+  it("writes atomic snapshots on initialization", () => {
+    const dataDir = createTempDataDir();
+    const registry = loadMissionControlRegistry(createConfig(), {
+      now: "2026-03-09T20:00:00.000Z",
     });
 
-    await service.reconcile({ reason: "manual" });
-    const state = service.getPublicState();
+    const store = createMissionControlStore({
+      dataDir,
+      registry,
+      now: "2026-03-09T20:00:00.000Z",
+    });
+    const paths = getMissionControlStorePaths(dataDir);
 
-    assert.strictEqual(state.stats.totalCards, 2);
-    assert.strictEqual(state.activeView.name, "Today");
-
-    const card = state.masterCards.find((entry) => entry.primaryLinearIdentifier === "ARC-38");
-    assert.ok(card, "expected synchronized card");
-
-    const timeline = service.getCardTimeline(card.id);
-    const replay = service.replayCardTimeline(card.id);
-    const diagnostics = service.getDiagnostics();
-
-    assert.ok(timeline.some((event) => event.type === "mission-control.linear.card-upserted"));
-    assert.ok(replay.some((step) => step.snapshot?.identifier === "ARC-38"));
-    assert.ok(
-      diagnostics.affectedCards.some((entry) => entry.primaryLinearIdentifier === "ARC-99"),
-    );
-    assert.strictEqual(
-      diagnostics.affectedCards.find((entry) => entry.primaryLinearIdentifier === "ARC-99")
-        .diagnostics.stale,
-      true,
+    assert.ok(fs.existsSync(paths.registrySnapshot));
+    assert.ok(fs.existsSync(paths.cardsSnapshot));
+    assert.ok(fs.existsSync(paths.eventLog));
+    assert.strictEqual(store.getState().sequence, 1);
+    assert.deepStrictEqual(
+      fs.readdirSync(paths.rootDir).filter((file) => file.endsWith(".tmp")),
+      [],
     );
   });
 
-  it("creates cross-lane child tasks through the parent owner and refreshes board state", async () => {
-    const dataDir = createTempDir();
-    const now = () => Date.parse("2026-03-10T04:00:00.000Z");
-    const createdInputs = [];
-    const parentIssueId = "issue-1";
-    const issuesById = new Map();
-    const parentIssue = createIssue({
-      id: parentIssueId,
-      identifier: "ARC-38",
-      labels: [
-        { id: "lane-jon", name: "lane:jon", color: "#58a6ff" },
-        { id: "dispatch-ready", name: "dispatch:ready", color: "#3fb950" },
-      ],
+  it("atomically overwrites an existing snapshot file", () => {
+    const dataDir = createTempDataDir();
+    const paths = getMissionControlStorePaths(dataDir);
+    fs.mkdirSync(paths.rootDir, { recursive: true });
+
+    atomicWriteJson(paths.registrySnapshot, { version: 1, cards: ["older"] });
+    atomicWriteJson(paths.registrySnapshot, { version: 2, cards: ["newer"] });
+
+    const saved = JSON.parse(fs.readFileSync(paths.registrySnapshot, "utf8"));
+    assert.deepStrictEqual(saved, { version: 2, cards: ["newer"] });
+    assert.deepStrictEqual(
+      fs.readdirSync(paths.rootDir).filter((file) => file.endsWith(".tmp")),
+      [],
+    );
+  });
+
+  it("replays post-snapshot events after restart", () => {
+    const dataDir = createTempDataDir();
+    const registry = loadMissionControlRegistry(createConfig(), {
+      now: "2026-03-09T20:00:00.000Z",
     });
-    issuesById.set(parentIssue.id, parentIssue);
+    const store = createMissionControlStore({
+      dataDir,
+      registry,
+      now: "2026-03-09T20:00:00.000Z",
+    });
 
-    const linearClient = {
-      fetchIssuesForProjects: async () => [issuesById.get(parentIssueId)],
-      fetchIssuesByIds: async ({ issueIds }) =>
-        issueIds.map((issueId) => issuesById.get(issueId)).filter(Boolean),
-      resolveProjectBySlug: async (projectSlug) => ({
-        id: "project-growth",
-        name: "Growth",
-        slug: projectSlug,
-        team: {
-          id: "team-growth",
-          key: "ARC",
-          name: "ArcQ Dev",
-        },
-      }),
-      resolveLabelIdsForTeam: async ({ labelNames }) => labelNames.map((label) => `label:${label}`),
-      createIssue: async (input) => {
-        createdInputs.push(input);
-        const childIssue = createIssue({
-          id: "issue-2",
-          identifier: "ARC-120",
-          title: input.title,
-          description: input.description,
-          project: {
-            id: "project-growth",
-            name: "Growth",
-            slug: "growth-board",
-            progress: 0,
-          },
-          state: {
-            id: "state-todo",
-            name: "Todo",
-            type: "unstarted",
-            color: "#999999",
-          },
-          labels: [
-            { id: "lane-mia", name: "lane:mia", color: "#ff66aa" },
-            { id: "risk-low", name: "risk:low", color: "#58a6ff" },
-            { id: "dispatch-ready", name: "dispatch:ready", color: "#3fb950" },
-          ],
-          parentIssue: {
-            id: parentIssueId,
-            identifier: "ARC-38",
-            title: parentIssue.title,
-            updatedAt: parentIssue.updatedAt,
-            state: parentIssue.state,
-            project: parentIssue.project,
-            labels: parentIssue.labels,
-            linkRole: "parent",
-            relationType: null,
-          },
-          linkedIssues: [
-            {
-              id: parentIssueId,
-              identifier: "ARC-38",
-              title: parentIssue.title,
-              updatedAt: parentIssue.updatedAt,
-              state: parentIssue.state,
-              project: parentIssue.project,
-              labels: parentIssue.labels,
-              linkRole: "parent",
-              relationType: null,
-            },
-          ],
-          linkedIssueIds: [parentIssueId],
-          linkedIssueIdentifiers: ["ARC-38"],
-          linkedIssueProjectSlugs: ["littlebrief"],
-        });
+    const firstCard = createCard();
+    store.upsertMasterCard(firstCard, { now: "2026-03-09T20:10:00.000Z" });
 
-        issuesById.set(childIssue.id, childIssue);
-        issuesById.set(parentIssueId, {
-          ...issuesById.get(parentIssueId),
-          linkedIssues: [
-            {
-              id: childIssue.id,
-              identifier: childIssue.identifier,
-              title: childIssue.title,
-              updatedAt: childIssue.updatedAt,
-              state: childIssue.state,
-              project: childIssue.project,
-              labels: childIssue.labels,
-              linkRole: "child",
-              relationType: null,
-            },
-          ],
-          linkedIssueIds: [childIssue.id],
-          linkedIssueIdentifiers: [childIssue.identifier],
-          linkedIssueProjectSlugs: [childIssue.project.slug],
-        });
-
-        return childIssue;
-      },
+    const secondCard = {
+      ...createCard({}),
+      id: "mc:lin_456",
+      primaryLinearIssueId: "lin_456",
+      primaryLinearIdentifier: "LB-456",
+      linkedLinearIssueIds: ["lin_456"],
+      linkedLinearIdentifiers: ["LB-456"],
+      title: "Recover from event-only writes",
+      updatedAt: "2026-03-09T20:11:00.000Z",
     };
 
-    const service = createMissionControlService({
-      config: createConfig(),
+    appendEvent(
+      getMissionControlStorePaths(dataDir).eventLog,
+      {
+        type: "card.upserted",
+        payload: { card: secondCard },
+        occurredAt: "2026-03-09T20:11:00.000Z",
+      },
+      { sequence: 3, now: "2026-03-09T20:11:00.000Z" },
+    );
+
+    const reloadedStore = createMissionControlStore({ dataDir });
+
+    assert.deepStrictEqual(
+      reloadedStore.getCards().map((card) => card.id),
+      ["mc:lin_123", "mc:lin_456"],
+    );
+    assert.strictEqual(reloadedStore.getState().sequence, 3);
+  });
+
+  it("advances sequence and state when appendEvent is used directly", () => {
+    const dataDir = createTempDataDir();
+    const registry = loadMissionControlRegistry(createConfig(), {
+      now: "2026-03-09T20:00:00.000Z",
+    });
+    const store = createMissionControlStore({
       dataDir,
-      now,
-      logger: { error() {}, log() {} },
-      linearClient,
-      setIntervalFn: () => 1,
-      clearIntervalFn: () => {},
-      setTimeoutFn: () => 1,
-      clearTimeoutFn: () => {},
+      registry,
+      now: "2026-03-09T20:00:00.000Z",
     });
 
-    await service.reconcile({ reason: "manual" });
-    const result = await service.createCrossLaneChildTask("ARC-38", {
-      actor: "jon",
-      title: "Prepare growth copy",
-      description: "Cross-lane follow-up owned by Mia.",
-      targetProjectSlug: "growth-board",
-      lane: "lane:mia",
-      risk: "risk:low",
-      dispatch: "dispatch:ready",
-    });
+    const firstCard = createCard();
+    const secondCard = {
+      ...createCard({}),
+      id: "mc:lin_456",
+      primaryLinearIssueId: "lin_456",
+      primaryLinearIdentifier: "LB-456",
+      linkedLinearIssueIds: ["lin_456"],
+      linkedLinearIdentifiers: ["LB-456"],
+      title: "Direct append path",
+      updatedAt: "2026-03-09T20:11:00.000Z",
+    };
 
-    assert.strictEqual(createdInputs.length, 1);
-    assert.strictEqual(createdInputs[0].parentId, "issue-1");
-    assert.strictEqual(createdInputs[0].projectId, "project-growth");
-    assert.strictEqual(createdInputs[0].teamId, "team-growth");
-    assert.deepStrictEqual(createdInputs[0].labelIds, [
-      "label:lane:mia",
-      "label:risk:low",
-      "label:dispatch:ready",
-    ]);
-    assert.ok(result.childCard, "expected created child card to be materialized");
-    assert.ok(result.parentCard, "expected refreshed parent card");
-    assert.strictEqual(result.parentCard.status, "blocked");
-    assert.strictEqual(result.parentCard.dispatchOwner, "pepper");
-    assert.ok(
-      result.parentCard.dependencies.some((dependency) => dependency.label === "ARC-120"),
-      "expected parent card to track the child issue as a dependency",
+    const firstEvent = store.appendEvent(
+      {
+        type: "card.upserted",
+        payload: { card: firstCard },
+        occurredAt: "2026-03-09T20:10:00.000Z",
+      },
+      { now: "2026-03-09T20:10:00.000Z" },
+    );
+    const secondEvent = store.appendEvent(
+      {
+        type: "card.upserted",
+        payload: { card: secondCard },
+        occurredAt: "2026-03-09T20:11:00.000Z",
+      },
+      { now: "2026-03-09T20:11:00.000Z" },
+    );
+
+    assert.strictEqual(firstEvent.sequence, 2);
+    assert.strictEqual(secondEvent.sequence, 3);
+    assert.deepStrictEqual(
+      store.getCards().map((card) => card.id),
+      ["mc:lin_123", "mc:lin_456"],
+    );
+
+    const reloadedStore = createMissionControlStore({ dataDir });
+    assert.deepStrictEqual(
+      reloadedStore.getCards().map((card) => card.id),
+      ["mc:lin_123", "mc:lin_456"],
     );
   });
 
-  it("rejects cross-lane child creation when the actor is not the parent owner", async () => {
-    const dataDir = createTempDir();
-    const service = createMissionControlService({
-      config: createConfig(),
+  it("replays the event log into the final card state", () => {
+    const dataDir = createTempDataDir();
+    const registry = loadMissionControlRegistry(createConfig(), {
+      now: "2026-03-09T20:00:00.000Z",
+    });
+    const store = createMissionControlStore({
       dataDir,
-      now: () => Date.parse("2026-03-10T04:00:00.000Z"),
-      logger: { error() {}, log() {} },
-      linearClient: {
-        fetchIssuesForProjects: async () => [
-          createIssue({
-            labels: [{ id: "lane-jon", name: "lane:jon", color: "#58a6ff" }],
-          }),
-        ],
-      },
-      setIntervalFn: () => 1,
-      clearIntervalFn: () => {},
-      setTimeoutFn: () => 1,
-      clearTimeoutFn: () => {},
+      registry,
+      now: "2026-03-09T20:00:00.000Z",
     });
 
-    await service.reconcile({ reason: "manual" });
+    const card = createCard();
+    store.upsertMasterCard(card, { now: "2026-03-09T20:10:00.000Z" });
+    store.deleteMasterCard(card.id, { now: "2026-03-09T20:15:00.000Z" });
 
-    await assert.rejects(
-      () =>
-        service.createCrossLaneChildTask("ARC-38", {
-          actor: "mia",
-          title: "Should fail",
-          targetProjectSlug: "growth-board",
-          lane: "lane:mia",
-        }),
-      /parent owner 'jon'/,
+    const replayed = replayMissionControlEvents(store.readEventLog());
+
+    assert.strictEqual(replayed.registry.projectCount, 1);
+    assert.deepStrictEqual(replayed.cards, []);
+  });
+
+  it("migrates a legacy cards snapshot without schemaVersion", () => {
+    const dataDir = createTempDataDir();
+    const paths = getMissionControlStorePaths(dataDir);
+    fs.mkdirSync(paths.rootDir, { recursive: true });
+    fs.writeFileSync(paths.cardsSnapshot, JSON.stringify([createCard()], null, 2));
+
+    const snapshot = readSnapshot(paths.cardsSnapshot, "mission-control.cards.snapshot");
+
+    assert.strictEqual(snapshot.schemaVersion, 1);
+    assert.strictEqual(snapshot.data.cards.length, 1);
+    assert.strictEqual(snapshot.data.cards[0].id, "mc:lin_123");
+  });
+
+  it("rejects future-version snapshots", () => {
+    const dataDir = createTempDataDir();
+    const paths = getMissionControlStorePaths(dataDir);
+    fs.mkdirSync(paths.rootDir, { recursive: true });
+    fs.writeFileSync(
+      paths.cardsSnapshot,
+      JSON.stringify(
+        {
+          schemaVersion: 999,
+          kind: "mission-control.cards.snapshot",
+          writtenAt: "2026-03-09T20:00:00.000Z",
+          lastEventSequence: 0,
+          data: { cards: [] },
+        },
+        null,
+        2,
+      ),
+    );
+
+    assert.throws(
+      () => readSnapshot(paths.cardsSnapshot, "mission-control.cards.snapshot"),
+      /unsupported schemaVersion 999/,
     );
   });
 });

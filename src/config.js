@@ -361,6 +361,13 @@ function loadConfig() {
       ),
     },
 
+    // Mission Control foundation config
+    missionControl: {
+      projects: fileConfig.missionControl?.projects || [],
+      agents: fileConfig.missionControl?.agents || [],
+      discordDestinations: fileConfig.missionControl?.discordDestinations || [],
+    },
+
     // Billing - for cost savings calculation
     billing: {
       claudePlanCost: parseFloat(
