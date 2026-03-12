@@ -369,6 +369,15 @@ describeServer("server", () => {
     assert.strictEqual(payload.delta.card.state.name, "Done");
   });
 
+  it("exposes Mission Control notification state", async () => {
+    const { statusCode, body } = await httpGet(`http://localhost:${TEST_PORT}/api/mission-control/state`);
+    assert.strictEqual(statusCode, 200);
+    const data = JSON.parse(body);
+    assert.ok(data.notifications, "should include notification state");
+    assert.strictEqual(typeof data.notifications.enabled, "boolean");
+    assert.ok(data.notifications.delivery, "should include delivery summary");
+  });
+
   it("serves static files for root path", async () => {
     const { statusCode } = await httpRequest(`http://127.0.0.1:${TEST_PORT}/`);
     assert.ok(statusCode >= 200 && statusCode < 500);

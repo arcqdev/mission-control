@@ -62,6 +62,8 @@
         </div>
       </header>
 
+      <div id="mission-control-alert-banner" class="mission-alert-banner hidden"></div>
+
       <div class="stats-bar">
         <div class="stat">
           <div class="stat-value" id="total-tokens">-</div>
@@ -2081,6 +2083,8 @@
           i18nText("sidebar.updated", { time: now }, `Updated: ${now}`),
         );
 
+        renderMissionControlAlertBanner(state.missionControl);
+
         // Render each section
         if (state.vitals) renderVitals(state.vitals);
         if (state.sessions) renderSessions(state.sessions, state.pagination, state.statusCounts);
@@ -2092,6 +2096,39 @@
         if (state.memory) renderMemory(state.memory);
         if (state.cerebro) renderCerebro(state.cerebro);
         if (state.subagents) renderSubagents(state.subagents);
+      }
+
+      function renderMissionControlAlertBanner(missionControl) {
+        const banner = document.getElementById("mission-control-alert-banner");
+        if (!banner) return;
+
+        const alert = missionControl?.notifications?.alertBanner;
+        if (!alert?.visible) {
+          banner.className = "mission-alert-banner hidden";
+          smartUpdate(banner, "");
+          return;
+        }
+
+        const icon = alert.severity === "critical" ? "🚨" : "⚠️";
+        const itemsHtml = (alert.items || [])
+          .map(
+            (item) =>
+              `<li><strong>${escapeHtml(item.title || "Mission Control")}</strong>${item.message ? ` — ${escapeHtml(item.message)}` : ""}</li>`,
+          )
+          .join("");
+
+        banner.className = `mission-alert-banner ${alert.severity || "warn"}`;
+        smartUpdate(
+          banner,
+          `
+            <div class="mission-alert-header">
+              <span class="mission-alert-icon">${icon}</span>
+              <span>${escapeHtml(alert.title || "Mission Control alert")}</span>
+            </div>
+            <div class="mission-alert-message">${escapeHtml(alert.message || "")}</div>
+            ${itemsHtml ? `<ul class="mission-alert-list">${itemsHtml}</ul>` : ""}
+          `,
+        );
       }
 
       // Legacy fallback - multiple API calls (used if /api/state fails)

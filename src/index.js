@@ -86,15 +86,8 @@ const { executeAction } = require("./actions");
 const { migrateDataDir } = require("./data");
 const { createAcpModule } = require("./acp");
 const { createStateModule } = require("./state");
-const {
-  buildAdminStatusPayload,
-  buildBoardPayload,
-  buildFiltersPayload,
-  buildHealthPayload,
-  buildMissionControlEventPayload,
-  buildSyncPayload,
-} = require("./mission-control/api");
-const { createMissionControlService } = require("./mission-control");
+const { createNotificationsModule } = require("./mission-control/notifications");
+const { handleMissionControlRequest, isMissionControlRoute } = require("./mission-control/routes");
 
 // ============================================================================
 // CONFIGURATION
@@ -469,12 +462,7 @@ const sessions = createSessionsModule({
   extractJSON,
 });
 
-const acp = createAcpModule({
-  getOpenClawDir,
-  runOpenClaw,
-  extractJSON,
-  parseSessionLabel: sessions.parseSessionLabel,
-});
+let missionControlNotifications;
 
 // State module (factory pattern)
 const state = createStateModule({
@@ -488,11 +476,34 @@ const state = createStateModule({
   getDailyTokenUsage: () => getDailyTokenUsage(getOpenClawDir),
   getTokenStats,
   getCerebroTopics: (opts) => getCerebroTopics(PATHS.cerebro, opts),
+  getMissionControlState: () =>
+    missionControlNotifications
+      ? {
+          notifications: missionControlNotifications.getState(),
+        }
+      : null,
   runOpenClaw,
   extractJSON,
   readTranscript: (sessionId) => sessions.readTranscript(sessionId),
   getMissionControlState: () => missionControl.getPublicState(),
   getAcpActivity: () => acp.getAgentActivity(),
+});
+
+missionControlNotifications = createNotificationsModule({
+  config: CONFIG.integrations.missionControl.notifications,
+  dataDir: DATA_DIR,
+  onStateChange: () => {
+    if (sseClients.size === 0) {
+      return;
+    }
+
+    try {
+      const fullState = state.refreshState();
+      broadcastSSE("update", fullState);
+    } catch (error) {
+      console.error("[Mission Control] Failed to broadcast notification state:", error.message);
+    }
+  },
 });
 
 // ============================================================================
@@ -978,6 +989,11 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: "Method not allowed" }));
     }
     return;
+  } else if (isMissionControlRoute(pathname)) {
+    const handled = handleMissionControlRequest(req, res, pathname, missionControlNotifications);
+    if (handled) {
+      return;
+    }
   } else if (isJobsRoute(pathname)) {
     handleJobsRequest(req, res, pathname, query, req.method);
   } else {

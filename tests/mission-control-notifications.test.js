@@ -1,411 +1,246 @@
-const { afterEach, describe, it } = require("node:test");
+const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const fs = require("node:fs");
+const http = require("node:http");
+const os = require("node:os");
+const path = require("node:path");
 
-const { createMissionControlService } = require("../src/mission-control");
+const { createNotificationsModule } = require("../src/mission-control/notifications");
 
 const tempDirs = [];
 
-function createTempDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-mc-notify-"));
+function createTempDataDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-mc-"));
   tempDirs.push(dir);
   return dir;
 }
 
-function createTimerHarness() {
-  let nextId = 1;
-  let queue = [];
-
+function createConfig(webhookUrl, overrides = {}) {
   return {
-    setTimeoutFn(fn, delay = 0) {
-      const id = nextId++;
-      queue.push({ id, fn, delay });
-      return id;
-    },
-    clearTimeoutFn(id) {
-      queue = queue.filter((entry) => entry.id !== id);
-    },
-    peekDelays() {
-      return queue.map((entry) => entry.delay);
-    },
-    async runNext() {
-      if (queue.length === 0) {
-        return false;
-      }
-      const next = queue.shift();
-      await next.fn();
-      await new Promise((resolve) => setImmediate(resolve));
-      return true;
-    },
-    async runAll(limit = 20) {
-      let remaining = limit;
-      while (queue.length > 0) {
-        if (remaining <= 0) {
-          throw new Error("Timer queue did not settle");
-        }
-        remaining -= 1;
-        const next = queue.shift();
-        await next.fn();
-        await new Promise((resolve) => setImmediate(resolve));
-      }
+    enabled: true,
+    discord: {
+      defaults: {
+        senderKey: "mission-control",
+        destinationKey: "ops-main",
+      },
+      retry: {
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+        ...(overrides.discord?.retry || {}),
+      },
+      senders: {
+        "mission-control": {
+          displayName: "Mission Control",
+          avatarEmoji: "🛰️",
+          defaultDestinationKey: "ops-main",
+          ...(overrides.discord?.senders?.["mission-control"] || {}),
+        },
+      },
+      destinations: {
+        "ops-main": {
+          label: "Ops Main",
+          webhookUrl,
+          allowedSenders: ["mission-control"],
+          ...(overrides.discord?.destinations?.["ops-main"] || {}),
+        },
+      },
     },
   };
 }
 
-function createIssue(overrides = {}) {
+function createEvent(eventKey, overrides = {}) {
   return {
-    id: "issue-1",
-    identifier: "ARC-36",
-    title: "Implement Mission Control Discord notification pipeline",
-    description: "Deliver Discord notifications for Mission Control events.",
-    url: "https://linear.app/arcqdev/issue/ARC-36",
-    priority: 2,
-    estimate: 3,
-    createdAt: "2026-03-10T00:00:00.000Z",
-    updatedAt: "2026-03-10T04:00:00.000Z",
-    completedAt: "2026-03-10T04:00:00.000Z",
-    state: {
-      id: "state-done",
-      name: "Done",
-      type: "completed",
-      color: "#3fb950",
-    },
-    project: {
-      id: "project-1",
-      name: "Littlebrief",
-      slug: "littlebrief",
-      progress: 100,
-    },
-    team: {
-      id: "team-1",
-      key: "ARC",
-      name: "ArcQ Dev",
-    },
-    assignee: {
-      id: "user-1",
-      name: "Jon",
-      email: "jon@example.com",
-    },
-    labels: [{ id: "label-1", name: "lane:jon", color: "#58a6ff" }],
-    cycle: null,
+    eventKey,
+    category: "completion",
+    severity: "info",
+    title: "ARC-28 shipped",
+    summary: "Mission Control marked ARC-28 complete.",
+    cardId: "mc-arc-28",
+    issueIdentifier: "ARC-28",
+    projectKey: "arcqdev",
+    occurredAt: "2026-03-09T18:00:00.000Z",
     ...overrides,
   };
 }
 
-function createConfig(overrides = {}) {
-  return {
-    integrations: {
-      linear: {
-        enabled: true,
-        apiKey: "linear-key",
-        projectSlugs: ["littlebrief"],
-        syncIntervalMs: 120000,
-        reconcileOverlapMs: 300000,
-        webhookPath: "/api/integrations/linear/webhook",
-        webhookSecret: "secret",
-        ...(overrides.integrations?.linear || {}),
-      },
-    },
-    missionControl: {
-      projects: [
-        {
-          key: "littlebrief",
-          repoPath: "~/dev/arcqdev/littlebrief",
-          linearProjectSlug: "littlebrief",
-          lane: "lane:jon",
-          symphonyPort: 45123,
-        },
-      ],
-      discordDestinations: [
-        {
-          key: "jon",
-          channelLabel: "Jon Ops",
-          webhookUrl: "https://discord.example/webhooks/jon",
-          allowedSenderIdentities: ["jon"],
-        },
-      ],
-      outcomes: overrides.missionControl?.outcomes || [],
-    },
-  };
-}
+async function withWebhookServer(handler, testFn) {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", async () => {
+      const parsedBody = body ? JSON.parse(body) : null;
+      requests.push({
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body: parsedBody,
+      });
 
-function createDiscordResponse({ ok, status, retryAfter, body = "" }) {
-  return {
-    ok,
-    status,
-    headers: {
-      get(name) {
-        return String(name).toLowerCase() === "retry-after" ? retryAfter || null : null;
-      },
-    },
-    text: async () => body,
-  };
+      try {
+        await handler(req, res, requests);
+      } catch (error) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end(error.message);
+      }
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const webhookUrl = `http://127.0.0.1:${address.port}/discord-webhook`;
+
+  try {
+    await testFn({ webhookUrl, requests });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 afterEach(() => {
-  while (tempDirs.length > 0) {
-    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 describe("Mission Control Discord notifications", () => {
-  it("delivers stable completion payloads without duplicate floods", async () => {
-    const dataDir = createTempDir();
-    const timers = createTimerHarness();
-    const calls = [];
-    const service = createMissionControlService({
-      config: createConfig(),
-      dataDir,
-      now: () => Date.parse("2026-03-10T04:05:00.000Z"),
-      logger: { error() {}, warn() {} },
-      linearClient: {
-        fetchIssuesForProjects: async () => [createIssue()],
+  it("delivers completion notifications with a stable Discord payload", async () => {
+    await withWebhookServer(
+      async (_req, res) => {
+        res.writeHead(204);
+        res.end();
       },
-      discordFetchImpl: async (url, options) => {
-        calls.push({ url, options });
-        return createDiscordResponse({ ok: true, status: 204 });
+      async ({ webhookUrl, requests }) => {
+        const dataDir = createTempDataDir();
+        const notifications = createNotificationsModule({
+          config: createConfig(webhookUrl),
+          dataDir,
+          sleep: async () => {},
+        });
+
+        const result = await notifications.deliverEvent(createEvent("arc-28-complete"));
+        assert.strictEqual(result.delivered, true);
+        assert.strictEqual(requests.length, 1);
+
+        const payload = requests[0].body;
+        assert.strictEqual(payload.username, "Mission Control");
+        assert.strictEqual(payload.content, "🛰️ [Mission Control] ARC-28 shipped");
+        assert.ok(Array.isArray(payload.embeds));
+        assert.strictEqual(payload.embeds.length, 1);
+        assert.strictEqual(payload.embeds[0].title, "ARC-28 shipped");
+        assert.strictEqual(payload.embeds[0].description, "Mission Control marked ARC-28 complete.");
+        assert.strictEqual(payload.embeds[0].footer.text, "Mission Control • arc-28-complete");
+        assert.deepStrictEqual(
+          payload.embeds[0].fields.map((field) => field.name),
+          ["Category", "Severity", "Card", "Issue", "Project", "Destination"],
+        );
+
+        const snapshot = notifications.getState();
+        assert.strictEqual(snapshot.delivery.deliveredCount, 1);
+        assert.strictEqual(snapshot.alertBanner.visible, false);
+
+        const notificationsFile = path.join(dataDir, "mission-control", "notifications.json");
+        assert.ok(snapshot.updatedAt, "should update notification snapshot timestamp");
+        assert.ok(fs.existsSync(notificationsFile), "should persist notifications ledger");
       },
-      setIntervalFn: () => 1,
-      clearIntervalFn: () => {},
-      setTimeoutFn: timers.setTimeoutFn,
-      clearTimeoutFn: timers.clearTimeoutFn,
-    });
-
-    await service.reconcile({ reason: "manual" });
-    await timers.runAll();
-
-    const firstState = service.getPublicState();
-    assert.strictEqual(calls.length, 1);
-    assert.strictEqual(calls[0].url, "https://discord.example/webhooks/jon");
-
-    const payload = JSON.parse(calls[0].options.body);
-    assert.strictEqual(payload.username, "Mission Control");
-    assert.strictEqual(payload.allowed_mentions.parse.length, 0);
-    assert.match(payload.content, /Mission complete: ARC-36 completed/);
-    assert.strictEqual(payload.embeds[0].title, "ARC-36 completed");
-    assert.match(payload.embeds[0].footer.text, /Mission Control notification v1 • completion/);
-    assert.strictEqual(firstState.notifications.stats.delivered, 1);
-    assert.strictEqual(firstState.notifications.stats.deadLetters, 0);
-    assert.strictEqual(firstState.notifications.recentDeliveries[0].category, "completion");
-
-    await service.reconcile({ reason: "manual" });
-    await timers.runAll();
-
-    assert.strictEqual(calls.length, 1);
-  });
-
-  it("retries 429 Discord responses with backoff and then succeeds", async () => {
-    const dataDir = createTempDir();
-    const timers = createTimerHarness();
-    const calls = [];
-    let attempt = 0;
-    const service = createMissionControlService({
-      config: createConfig(),
-      dataDir,
-      now: () => Date.parse("2026-03-10T04:05:00.000Z"),
-      logger: { error() {}, warn() {} },
-      linearClient: {
-        fetchIssuesForProjects: async () => [createIssue()],
-      },
-      discordFetchImpl: async () => {
-        attempt += 1;
-        calls.push(attempt);
-        if (attempt === 1) {
-          return createDiscordResponse({
-            ok: false,
-            status: 429,
-            retryAfter: "2",
-            body: "rate limited",
-          });
-        }
-        return createDiscordResponse({ ok: true, status: 204 });
-      },
-      setIntervalFn: () => 1,
-      clearIntervalFn: () => {},
-      setTimeoutFn: timers.setTimeoutFn,
-      clearTimeoutFn: timers.clearTimeoutFn,
-    });
-
-    await service.reconcile({ reason: "manual" });
-    await timers.runNext();
-
-    let state = service.getPublicState();
-    assert.strictEqual(state.notifications.stats.retrying, 1);
-    assert.strictEqual(state.notifications.recentDeliveries[0].responseStatus, 429);
-    assert.strictEqual(timers.peekDelays()[0], 2000);
-
-    await timers.runNext();
-    state = service.getPublicState();
-
-    assert.strictEqual(calls.length, 2);
-    assert.strictEqual(state.notifications.stats.delivered, 1);
-    assert.strictEqual(state.notifications.stats.deadLetters, 0);
-    assert.strictEqual(state.notifications.alertBanner, null);
-  });
-
-  it("dead-letters repeated 5xx exception alerts without creating duplicate floods", async () => {
-    const dataDir = createTempDir();
-    const timers = createTimerHarness();
-    let calls = 0;
-    const service = createMissionControlService({
-      config: createConfig(),
-      dataDir,
-      now: () => Date.parse("2026-03-10T04:05:00.000Z"),
-      logger: { error() {}, warn() {} },
-      linearClient: {
-        fetchIssuesForProjects: async () => {
-          throw new Error("Linear unavailable");
-        },
-      },
-      discordFetchImpl: async () => {
-        calls += 1;
-        return createDiscordResponse({ ok: false, status: 500, body: "discord outage" });
-      },
-      setIntervalFn: () => 1,
-      clearIntervalFn: () => {},
-      setTimeoutFn: timers.setTimeoutFn,
-      clearTimeoutFn: timers.clearTimeoutFn,
-    });
-
-    await service.reconcile({ reason: "manual" });
-    await timers.runAll();
-
-    let state = service.getPublicState();
-    assert.strictEqual(calls, 4);
-    assert.strictEqual(state.sync.status, "error");
-    assert.strictEqual(state.notifications.stats.deadLetters, 1);
-    assert.strictEqual(state.notifications.recentDeliveries[0].category, "exception");
-    assert.strictEqual(state.notifications.recentDeliveries[0].status, "dead_letter");
-    assert.strictEqual(state.notifications.alertBanner.level, "error");
-    assert.match(state.notifications.recentDeliveries[0].title, /Mission Control exception/);
-
-    await service.reconcile({ reason: "manual" });
-    await timers.runAll();
-    state = service.getPublicState();
-
-    assert.strictEqual(calls, 4);
-    assert.strictEqual(state.notifications.stats.deadLetters, 1);
-  });
-
-  it("sends one human-review alert per active review episode for rolled-up outcomes", async () => {
-    const dataDir = createTempDir();
-    const timers = createTimerHarness();
-    const calls = [];
-    const service = createMissionControlService({
-      config: createConfig({
-        missionControl: {
-          outcomes: [
-            {
-              key: "jon-review-rollup",
-              missionKey: "mission-jon-review-rollup",
-              title: "Jon review rollup",
-              lane: "lane:jon",
-              linkedLinearIdentifiers: ["ARC-36"],
-              linkedLinearProjectSlugs: ["littlebrief"],
-              linkedProjectKeys: ["littlebrief"],
-            },
-          ],
-        },
-      }),
-      dataDir,
-      now: () => Date.parse("2026-03-10T04:05:00.000Z"),
-      logger: { error() {}, warn() {} },
-      linearClient: {
-        fetchIssuesForProjects: async () => [
-          createIssue({
-            completedAt: null,
-            state: {
-              id: "state-review",
-              name: "Awaiting Review",
-              type: "review",
-              color: "#d29922",
-            },
-            updatedAt: "2026-03-10T04:00:00.000Z",
-          }),
-        ],
-      },
-      discordFetchImpl: async (url, options) => {
-        calls.push({ url, options });
-        return createDiscordResponse({ ok: true, status: 204 });
-      },
-      setIntervalFn: () => 1,
-      clearIntervalFn: () => {},
-      setTimeoutFn: timers.setTimeoutFn,
-      clearTimeoutFn: timers.clearTimeoutFn,
-    });
-
-    await service.reconcile({ reason: "manual" });
-    await timers.runAll();
-    await service.reconcile({ reason: "manual" });
-    await timers.runAll();
-
-    assert.strictEqual(calls.length, 1);
-    const payload = JSON.parse(calls[0].options.body);
-    assert.match(
-      payload.content,
-      /Human review required: mission-jon-review-rollup needs human review/,
     );
-    assert.match(payload.embeds[0].footer.text, /Mission Control notification v1 • review/);
   });
 
-  it("sends completion for a parent outcome when all linked children are terminal", async () => {
-    const dataDir = createTempDir();
-    const timers = createTimerHarness();
-    const calls = [];
-    const service = createMissionControlService({
-      config: createConfig({
-        integrations: {
-          linear: {
-            projectSlugs: ["littlebrief"],
-          },
-        },
-        missionControl: {
-          outcomes: [
-            {
-              key: "jon-big-task",
-              missionKey: "mission-jon-big-task",
-              title: "Jon big task",
-              lane: "lane:jon",
-              linkedLinearIdentifiers: ["ARC-36", "ARC-37"],
-              linkedLinearProjectSlugs: ["littlebrief"],
-              linkedProjectKeys: ["littlebrief"],
-            },
-          ],
-        },
-      }),
-      dataDir,
-      now: () => Date.parse("2026-03-10T04:05:00.000Z"),
-      logger: { error() {}, warn() {} },
-      linearClient: {
-        fetchIssuesForProjects: async () => [
-          createIssue(),
-          createIssue({
-            id: "issue-2",
-            identifier: "ARC-37",
-            title: "Second child",
-            url: "https://linear.app/arcqdev/issue/ARC-37",
+  it("retries once after a Discord 429 and then succeeds", async () => {
+    let attempt = 0;
+
+    await withWebhookServer(
+      async (_req, res) => {
+        attempt += 1;
+        if (attempt === 1) {
+          res.writeHead(429, { "Retry-After": "0", "Content-Type": "text/plain" });
+          res.end("rate limited");
+          return;
+        }
+
+        res.writeHead(204);
+        res.end();
+      },
+      async ({ webhookUrl, requests }) => {
+        const notifications = createNotificationsModule({
+          config: createConfig(webhookUrl),
+          dataDir: createTempDataDir(),
+          sleep: async () => {},
+        });
+
+        const result = await notifications.deliverEvent(createEvent("arc-28-rate-limit"));
+        assert.strictEqual(result.delivered, true);
+        assert.strictEqual(requests.length, 2);
+
+        const snapshot = notifications.getState();
+        assert.strictEqual(snapshot.delivery.deliveredCount, 1);
+        assert.strictEqual(snapshot.delivery.recent[0].attempts, 2);
+        assert.strictEqual(snapshot.delivery.recent[0].status, "delivered");
+        assert.strictEqual(snapshot.alertBanner.visible, false);
+      },
+    );
+  });
+
+  it("moves 5xx delivery failures to dead-letter after bounded retries", async () => {
+    await withWebhookServer(
+      async (_req, res) => {
+        res.writeHead(503, { "Content-Type": "text/plain" });
+        res.end("discord unavailable");
+      },
+      async ({ webhookUrl, requests }) => {
+        const notifications = createNotificationsModule({
+          config: createConfig(webhookUrl),
+          dataDir: createTempDataDir(),
+          sleep: async () => {},
+        });
+
+        const result = await notifications.deliverEvent(
+          createEvent("arc-28-exception", {
+            category: "exception",
+            severity: "critical",
+            title: "ARC-28 delivery exception",
+            summary: "Discord kept returning 5xx for this alert.",
           }),
-        ],
-      },
-      discordFetchImpl: async (url, options) => {
-        calls.push({ url, options });
-        return createDiscordResponse({ ok: true, status: 204 });
-      },
-      setIntervalFn: () => 1,
-      clearIntervalFn: () => {},
-      setTimeoutFn: timers.setTimeoutFn,
-      clearTimeoutFn: timers.clearTimeoutFn,
-    });
+        );
 
-    await service.reconcile({ reason: "manual" });
-    await timers.runAll();
+        assert.strictEqual(result.delivered, false);
+        assert.strictEqual(requests.length, 3);
+        assert.strictEqual(result.record.deadLetter, true);
+        assert.strictEqual(result.record.status, "failed");
+        assert.strictEqual(result.record.attempts, 3);
 
-    assert.strictEqual(calls.length, 1);
-    const payload = JSON.parse(calls[0].options.body);
-    assert.match(payload.content, /Mission complete: mission-jon-big-task completed/);
-    assert.strictEqual(service.getPublicState().masterCards.length, 1);
-    assert.strictEqual(service.getPublicState().masterCards[0].status, "completed");
+        const snapshot = notifications.getState();
+        assert.strictEqual(snapshot.delivery.deadLetterCount, 1);
+        assert.strictEqual(snapshot.alertBanner.visible, true);
+        assert.strictEqual(snapshot.alertBanner.severity, "critical");
+      },
+    );
+  });
+
+  it("dedupes repeated event keys to avoid duplicate floods", async () => {
+    await withWebhookServer(
+      async (_req, res) => {
+        res.writeHead(204);
+        res.end();
+      },
+      async ({ webhookUrl, requests }) => {
+        const notifications = createNotificationsModule({
+          config: createConfig(webhookUrl),
+          dataDir: createTempDataDir(),
+          sleep: async () => {},
+        });
+
+        const first = await notifications.deliverEvent(createEvent("arc-28-dedupe"));
+        const second = await notifications.deliverEvent(createEvent("arc-28-dedupe"));
+
+        assert.strictEqual(first.delivered, true);
+        assert.strictEqual(second.deduped, true);
+        assert.strictEqual(requests.length, 1);
+        assert.strictEqual(notifications.getState().delivery.recent[0].dedupeHits, 1);
+      },
+    );
   });
 });

@@ -184,33 +184,16 @@ function expandPath(p) {
     .replace(/\$\{HOME\}/g, HOME);
 }
 
-function parseList(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item).trim()).filter(Boolean);
-  }
-  return String(value)
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function parseJsonArray(value, fallback = []) {
-  if (!value) {
+function envBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") {
     return fallback;
   }
 
-  if (Array.isArray(value)) {
+  if (typeof value === "boolean") {
     return value;
   }
 
-  try {
-    const parsed = JSON.parse(String(value));
-    return Array.isArray(parsed) ? parsed : fallback;
-  } catch (error) {
-    console.warn("[Config] Failed to parse JSON array:", error.message);
-    return fallback;
-  }
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 }
 
 /**
@@ -218,6 +201,9 @@ function parseJsonArray(value, fallback = []) {
  */
 function loadConfig() {
   const fileConfig = loadConfigFile();
+  const missionControlConfig = fileConfig.integrations?.missionControl || {};
+  const missionControlNotifications = missionControlConfig.notifications || {};
+  const missionControlDiscord = missionControlNotifications.discord || {};
   const workspace =
     process.env.OPENCLAW_WORKSPACE || expandPath(fileConfig.paths?.workspace) || detectWorkspace();
 
@@ -305,6 +291,52 @@ function loadConfig() {
           "/api/integrations/linear/webhook",
         webhookSecret:
           process.env.LINEAR_WEBHOOK_SECRET || fileConfig.integrations?.linear?.webhookSecret,
+      },
+      missionControl: {
+        enabled: envBoolean(
+          process.env.MISSION_CONTROL_ENABLED,
+          missionControlConfig.enabled ?? false,
+        ),
+        notifications: {
+          enabled: envBoolean(
+            process.env.MISSION_CONTROL_NOTIFICATIONS_ENABLED,
+            missionControlNotifications.enabled ?? false,
+          ),
+          discord: {
+            defaults: {
+              senderKey:
+                process.env.MISSION_CONTROL_DISCORD_DEFAULT_SENDER ||
+                missionControlDiscord.defaults?.senderKey ||
+                null,
+              destinationKey:
+                process.env.MISSION_CONTROL_DISCORD_DEFAULT_DESTINATION ||
+                missionControlDiscord.defaults?.destinationKey ||
+                null,
+            },
+            retry: {
+              maxAttempts: parseInt(
+                process.env.MISSION_CONTROL_DISCORD_MAX_ATTEMPTS ||
+                  missionControlDiscord.retry?.maxAttempts ||
+                  "3",
+                10,
+              ),
+              baseDelayMs: parseInt(
+                process.env.MISSION_CONTROL_DISCORD_RETRY_BASE_MS ||
+                  missionControlDiscord.retry?.baseDelayMs ||
+                  "1000",
+                10,
+              ),
+              maxDelayMs: parseInt(
+                process.env.MISSION_CONTROL_DISCORD_RETRY_MAX_MS ||
+                  missionControlDiscord.retry?.maxDelayMs ||
+                  "30000",
+                10,
+              ),
+            },
+            senders: missionControlDiscord.senders || {},
+            destinations: missionControlDiscord.destinations || {},
+          },
+        },
       },
     },
 

@@ -18,6 +18,7 @@ const { formatBytes, formatTimeAgo } = require("./utils");
  * @param {function} deps.getDailyTokenUsage - function from tokens module
  * @param {function} deps.getTokenStats - function from tokens module
  * @param {function} deps.getCerebroTopics - function from cerebro module
+ * @param {function} deps.getMissionControlState - function returning Mission Control state
  * @param {function} deps.getMemoryStats - function (defined in this module, uses CONFIG.paths)
  * @param {function} deps.runOpenClaw - function from openclaw module
  * @param {function} deps.extractJSON - function from openclaw module
@@ -37,6 +38,7 @@ function createStateModule(deps) {
     getDailyTokenUsage,
     getTokenStats,
     getCerebroTopics,
+    getMissionControlState,
     runOpenClaw,
     extractJSON,
     readTranscript,
@@ -372,6 +374,7 @@ function createStateModule(deps) {
     let cron = [];
     let memory = {};
     let cerebro = {};
+    let missionControl = null;
     let subagents = [];
     let acp = null;
 
@@ -463,9 +466,11 @@ function createStateModule(deps) {
       console.error("[State] cerebro:", e.message);
     }
     try {
-      acp = getAcpActivity();
+      if (typeof getMissionControlState === "function") {
+        missionControl = getMissionControlState();
+      }
     } catch (e) {
-      console.error("[State] acp:", e.message);
+      console.error("[State] missionControl:", e.message);
     }
     // Derive subagents from allSessions (no extra CLI call needed)
     // Configurable retention: SUBAGENT_RETENTION_HOURS env var (default 12h)
@@ -503,8 +508,7 @@ function createStateModule(deps) {
       cron,
       memory,
       cerebro,
-      acp,
-      missionControl: getMissionControlState(),
+      missionControl,
       subagents,
       pagination: {
         page: 1,
