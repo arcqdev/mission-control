@@ -80,6 +80,101 @@ function normalizeCard(input) {
           }))
           .sort((left, right) => (left.name || "").localeCompare(right.name || ""))
       : [],
+    parentIssue: input.parentIssue
+      ? {
+          id: input.parentIssue.id || null,
+          identifier: input.parentIssue.identifier || null,
+          title: input.parentIssue.title || "Untitled",
+          updatedAt: input.parentIssue.updatedAt || null,
+          completedAt: input.parentIssue.completedAt || null,
+          canceledAt: input.parentIssue.canceledAt || null,
+          archivedAt: input.parentIssue.archivedAt || null,
+          state: input.parentIssue.state
+            ? {
+                id: input.parentIssue.state.id || null,
+                name: input.parentIssue.state.name || null,
+                type: input.parentIssue.state.type || null,
+                color: input.parentIssue.state.color || null,
+              }
+            : null,
+          project: input.parentIssue.project
+            ? {
+                id: input.parentIssue.project.id || null,
+                name: input.parentIssue.project.name || null,
+                slug: input.parentIssue.project.slug || null,
+                progress: input.parentIssue.project.progress ?? null,
+              }
+            : null,
+          labels: Array.isArray(input.parentIssue.labels)
+            ? input.parentIssue.labels
+                .map((label) => ({
+                  id: label.id || null,
+                  name: label.name || null,
+                  color: label.color || null,
+                }))
+                .sort((left, right) => (left.name || "").localeCompare(right.name || ""))
+            : [],
+          linkRole: input.parentIssue.linkRole || "parent",
+          relationType: input.parentIssue.relationType || null,
+        }
+      : null,
+    linkedIssues: Array.isArray(input.linkedIssues)
+      ? input.linkedIssues
+          .map((issue) => ({
+            id: issue.id || null,
+            identifier: issue.identifier || null,
+            title: issue.title || "Untitled",
+            updatedAt: issue.updatedAt || null,
+            completedAt: issue.completedAt || null,
+            canceledAt: issue.canceledAt || null,
+            archivedAt: issue.archivedAt || null,
+            state: issue.state
+              ? {
+                  id: issue.state.id || null,
+                  name: issue.state.name || null,
+                  type: issue.state.type || null,
+                  color: issue.state.color || null,
+                }
+              : null,
+            project: issue.project
+              ? {
+                  id: issue.project.id || null,
+                  name: issue.project.name || null,
+                  slug: issue.project.slug || null,
+                  progress: issue.project.progress ?? null,
+                }
+              : null,
+            labels: Array.isArray(issue.labels)
+              ? issue.labels
+                  .map((label) => ({
+                    id: label.id || null,
+                    name: label.name || null,
+                    color: label.color || null,
+                  }))
+                  .sort((left, right) => (left.name || "").localeCompare(right.name || ""))
+              : [],
+            linkRole: issue.linkRole || "related",
+            relationType: issue.relationType || null,
+          }))
+          .sort((left, right) =>
+            (left.identifier || left.id || "").localeCompare(right.identifier || right.id || ""),
+          )
+      : [],
+    linkedIssueIds: Array.isArray(input.linkedIssueIds)
+      ? [...new Set(input.linkedIssueIds.filter(Boolean))].sort((left, right) =>
+          left.localeCompare(right),
+        )
+      : [],
+    linkedIssueIdentifiers: Array.isArray(input.linkedIssueIdentifiers)
+      ? [...new Set(input.linkedIssueIdentifiers.filter(Boolean))].sort((left, right) =>
+          left.localeCompare(right),
+        )
+      : [],
+    linkedIssueProjectSlugs: Array.isArray(input.linkedIssueProjectSlugs)
+      ? [...new Set(input.linkedIssueProjectSlugs.filter(Boolean))].sort((left, right) =>
+          left.localeCompare(right),
+        )
+      : [],
     cycle: input.cycle
       ? {
           id: input.cycle.id || null,

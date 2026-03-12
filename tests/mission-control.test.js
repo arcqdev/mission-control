@@ -77,7 +77,13 @@ function createConfig(overrides = {}) {
           lane: "lane:jon",
           symphonyPort: 45123,
         },
-        ...((overrides.missionControl?.projects || []).slice(1) || []),
+        {
+          key: "growth",
+          repoPath: "~/dev/arcqdev/growth",
+          linearProjectSlug: "growth-board",
+          lane: "lane:mia",
+          symphonyPort: null,
+        },
       ],
       outcomes: overrides.missionControl?.outcomes || [],
       discordDestinations: overrides.missionControl?.discordDestinations || [],
@@ -181,84 +187,170 @@ describe("mission control service", () => {
     );
   });
 
-  it("rolls linked Linear issues into one outcome card without top-level dupes", async () => {
+  it("creates cross-lane child tasks through the parent owner and refreshes board state", async () => {
     const dataDir = createTempDir();
-    const observedProjectSlugs = [];
-    const service = createMissionControlService({
-      config: createConfig({
-        integrations: {
-          linear: {
-            projectSlugs: ["littlebrief"],
-          },
-        },
-        missionControl: {
-          projects: [
-            {
-              key: "littlebrief",
-              repoPath: "~/dev/arcqdev/littlebrief",
-              linearProjectSlug: "littlebrief",
-              lane: "lane:jon",
-              symphonyPort: 45123,
-            },
-            {
-              key: "ops-board",
-              repoPath: "~/dev/arcqdev/ops-board",
-              linearProjectSlug: "ops-board",
-              lane: "lane:jon",
-              symphonyPort: null,
-            },
-          ],
-          outcomes: [
-            {
-              key: "jon-big-task",
-              missionKey: "mission-jon-big-task",
-              title: "Jon do this big task",
-              summary: "Parent outcome for a multi-board request.",
-              lane: "lane:jon",
-              linkedLinearIdentifiers: ["ARC-38", "OPS-12"],
-              linkedLinearProjectSlugs: ["littlebrief", "ops-board"],
-              linkedProjectKeys: ["littlebrief", "ops-board"],
-              links: [
-                {
-                  kind: "project",
-                  label: "Littlebrief board",
-                  url: "https://linear.app/arcqdev/project/littlebrief",
-                  projectSlug: "littlebrief",
-                },
-                {
-                  kind: "project",
-                  label: "Ops board",
-                  url: "https://linear.app/arcqdev/project/ops-board",
-                  projectSlug: "ops-board",
-                },
-              ],
-            },
-          ],
+    const now = () => Date.parse("2026-03-10T04:00:00.000Z");
+    const createdInputs = [];
+    const parentIssueId = "issue-1";
+    const issuesById = new Map();
+    const parentIssue = createIssue({
+      id: parentIssueId,
+      identifier: "ARC-38",
+      labels: [
+        { id: "lane-jon", name: "lane:jon", color: "#58a6ff" },
+        { id: "dispatch-ready", name: "dispatch:ready", color: "#3fb950" },
+      ],
+    });
+    issuesById.set(parentIssue.id, parentIssue);
+
+    const linearClient = {
+      fetchIssuesForProjects: async () => [issuesById.get(parentIssueId)],
+      fetchIssuesByIds: async ({ issueIds }) =>
+        issueIds.map((issueId) => issuesById.get(issueId)).filter(Boolean),
+      resolveProjectBySlug: async (projectSlug) => ({
+        id: "project-growth",
+        name: "Growth",
+        slug: projectSlug,
+        team: {
+          id: "team-growth",
+          key: "ARC",
+          name: "ArcQ Dev",
         },
       }),
+      resolveLabelIdsForTeam: async ({ labelNames }) => labelNames.map((label) => `label:${label}`),
+      createIssue: async (input) => {
+        createdInputs.push(input);
+        const childIssue = createIssue({
+          id: "issue-2",
+          identifier: "ARC-120",
+          title: input.title,
+          description: input.description,
+          project: {
+            id: "project-growth",
+            name: "Growth",
+            slug: "growth-board",
+            progress: 0,
+          },
+          state: {
+            id: "state-todo",
+            name: "Todo",
+            type: "unstarted",
+            color: "#999999",
+          },
+          labels: [
+            { id: "lane-mia", name: "lane:mia", color: "#ff66aa" },
+            { id: "risk-low", name: "risk:low", color: "#58a6ff" },
+            { id: "dispatch-ready", name: "dispatch:ready", color: "#3fb950" },
+          ],
+          parentIssue: {
+            id: parentIssueId,
+            identifier: "ARC-38",
+            title: parentIssue.title,
+            updatedAt: parentIssue.updatedAt,
+            state: parentIssue.state,
+            project: parentIssue.project,
+            labels: parentIssue.labels,
+            linkRole: "parent",
+            relationType: null,
+          },
+          linkedIssues: [
+            {
+              id: parentIssueId,
+              identifier: "ARC-38",
+              title: parentIssue.title,
+              updatedAt: parentIssue.updatedAt,
+              state: parentIssue.state,
+              project: parentIssue.project,
+              labels: parentIssue.labels,
+              linkRole: "parent",
+              relationType: null,
+            },
+          ],
+          linkedIssueIds: [parentIssueId],
+          linkedIssueIdentifiers: ["ARC-38"],
+          linkedIssueProjectSlugs: ["littlebrief"],
+        });
+
+        issuesById.set(childIssue.id, childIssue);
+        issuesById.set(parentIssueId, {
+          ...issuesById.get(parentIssueId),
+          linkedIssues: [
+            {
+              id: childIssue.id,
+              identifier: childIssue.identifier,
+              title: childIssue.title,
+              updatedAt: childIssue.updatedAt,
+              state: childIssue.state,
+              project: childIssue.project,
+              labels: childIssue.labels,
+              linkRole: "child",
+              relationType: null,
+            },
+          ],
+          linkedIssueIds: [childIssue.id],
+          linkedIssueIdentifiers: [childIssue.identifier],
+          linkedIssueProjectSlugs: [childIssue.project.slug],
+        });
+
+        return childIssue;
+      },
+    };
+
+    const service = createMissionControlService({
+      config: createConfig(),
+      dataDir,
+      now,
+      logger: { error() {}, log() {} },
+      linearClient,
+      setIntervalFn: () => 1,
+      clearIntervalFn: () => {},
+      setTimeoutFn: () => 1,
+      clearTimeoutFn: () => {},
+    });
+
+    await service.reconcile({ reason: "manual" });
+    const result = await service.createCrossLaneChildTask("ARC-38", {
+      actor: "jon",
+      title: "Prepare growth copy",
+      description: "Cross-lane follow-up owned by Mia.",
+      targetProjectSlug: "growth-board",
+      lane: "lane:mia",
+      risk: "risk:low",
+      dispatch: "dispatch:ready",
+    });
+
+    assert.strictEqual(createdInputs.length, 1);
+    assert.strictEqual(createdInputs[0].parentId, "issue-1");
+    assert.strictEqual(createdInputs[0].projectId, "project-growth");
+    assert.strictEqual(createdInputs[0].teamId, "team-growth");
+    assert.deepStrictEqual(createdInputs[0].labelIds, [
+      "label:lane:mia",
+      "label:risk:low",
+      "label:dispatch:ready",
+    ]);
+    assert.ok(result.childCard, "expected created child card to be materialized");
+    assert.ok(result.parentCard, "expected refreshed parent card");
+    assert.strictEqual(result.parentCard.status, "blocked");
+    assert.strictEqual(result.parentCard.dispatchOwner, "pepper");
+    assert.ok(
+      result.parentCard.dependencies.some((dependency) => dependency.label === "ARC-120"),
+      "expected parent card to track the child issue as a dependency",
+    );
+  });
+
+  it("rejects cross-lane child creation when the actor is not the parent owner", async () => {
+    const dataDir = createTempDir();
+    const service = createMissionControlService({
+      config: createConfig(),
       dataDir,
       now: () => Date.parse("2026-03-10T04:00:00.000Z"),
       logger: { error() {}, log() {} },
       linearClient: {
-        fetchIssuesForProjects: async ({ projectSlugs }) => {
-          observedProjectSlugs.push(...projectSlugs);
-          return [
-            createIssue(),
-            createIssue({
-              id: "issue-ops-12",
-              identifier: "OPS-12",
-              title: "Cross-board follow-up",
-              url: "https://linear.app/arcqdev/issue/OPS-12",
-              project: {
-                id: "project-2",
-                name: "Ops Board",
-                slug: "ops-board",
-                progress: 20,
-              },
-              updatedAt: "2026-03-10T03:00:00.000Z",
-            }),
-          ];
-        },
+        fetchIssuesForProjects: async () => [
+          createIssue({
+            labels: [{ id: "lane-jon", name: "lane:jon", color: "#58a6ff" }],
+          }),
+        ],
       },
       setIntervalFn: () => 1,
       clearIntervalFn: () => {},
@@ -267,19 +359,16 @@ describe("mission control service", () => {
     });
 
     await service.reconcile({ reason: "manual" });
-    const state = service.getPublicState();
-    const outcome = state.masterCards.find((entry) => entry.outcomeId === "jon-big-task");
 
-    assert.ok(outcome, "expected rolled-up outcome card");
-    assert.strictEqual(state.stats.totalCards, 1);
-    assert.deepStrictEqual([...new Set(observedProjectSlugs)].sort(), ["littlebrief", "ops-board"]);
-    assert.strictEqual(outcome.identifier, "mission-jon-big-task");
-    assert.strictEqual(outcome.cardType, "outcome");
-    assert.strictEqual(outcome.linearChildren.length, 2);
-    assert.strictEqual(outcome.childStats.linkedIssueTargetCount, 2);
-    assert.strictEqual(outcome.childStats.matchedIssueCount, 2);
-    assert.strictEqual(outcome.linkedProjects.length, 2);
-    assert.ok(outcome.links.some((link) => link.kind === "project"));
-    assert.ok(outcome.links.some((link) => link.kind === "issue"));
+    await assert.rejects(
+      () =>
+        service.createCrossLaneChildTask("ARC-38", {
+          actor: "mia",
+          title: "Should fail",
+          targetProjectSlug: "growth-board",
+          lane: "lane:mia",
+        }),
+      /parent owner 'jon'/,
+    );
   });
 });

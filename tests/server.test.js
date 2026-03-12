@@ -308,6 +308,45 @@ describeServer("server", () => {
     assert.strictEqual(replay.board.masterCards.length, 1);
   });
 
+  it("rejects malformed cross-lane child creation requests before reaching Linear", async () => {
+    const response = await httpRequest(
+      `http://127.0.0.1:${TEST_PORT}/api/mission-control/cards/ARC-26/cross-lane-child`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: "{invalid json",
+      },
+    );
+
+    const payload = JSON.parse(response.body);
+    assert.strictEqual(response.statusCode, 400);
+    assert.match(payload.error, /Invalid JSON/);
+  });
+
+  it("returns 404 when creating a cross-lane child for an unknown card", async () => {
+    const response = await httpRequest(
+      `http://127.0.0.1:${TEST_PORT}/api/mission-control/cards/ARC-404/cross-lane-child`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          actor: "jon",
+          title: "Create cross-lane child",
+          targetProjectSlug: "growth-board",
+          lane: "lane:mia",
+        }),
+      },
+    );
+
+    const payload = JSON.parse(response.body);
+    assert.strictEqual(response.statusCode, 404);
+    assert.match(payload.error, /card not found/i);
+  });
+
   it("streams Mission Control card deltas over the shared SSE endpoint", async () => {
     const updatedIssue = createIssue({
       updatedAt: "2026-03-10T00:10:00.000Z",
@@ -417,5 +456,25 @@ describeServer("server auth posture for Mission Control", () => {
 
     assert.strictEqual(payload.type, "card-upserted");
     assert.strictEqual(payload.delta.card.state.name, "In Review");
+  });
+
+  it("keeps localhost access to the cross-lane child route in token mode", async () => {
+    const response = await httpRequest(
+      `http://127.0.0.1:${TEST_PORT}/api/mission-control/cards/ARC-404/cross-lane-child`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          actor: "jon",
+          title: "Create cross-lane child",
+          targetProjectSlug: "growth-board",
+          lane: "lane:mia",
+        }),
+      },
+    );
+
+    assert.strictEqual(response.statusCode, 404);
   });
 });
