@@ -15,29 +15,28 @@ const DEFAULT_SAVED_VIEWS = Object.freeze([
     },
   },
   {
-    id: "jon-ready",
-    name: "Jon ready",
+    id: "jon-lane",
+    name: "Jon lane",
     builtin: true,
     filters: {
       lane: "lane:jon",
-      dispatch: "dispatch:ready",
     },
   },
   {
-    id: "mia-ready",
-    name: "Mia ready",
+    id: "mia-lane",
+    name: "Mia lane",
     builtin: true,
     filters: {
       lane: "lane:mia",
-      dispatch: "dispatch:ready",
     },
   },
   {
-    id: "pepper-dispatch",
-    name: "Pepper dispatch",
+    id: "pepper-blockers",
+    name: "Pepper blockers",
     builtin: true,
     filters: {
-      dispatchOwner: "pepper",
+      lane: "lane:pepper",
+      blocked: true,
     },
   },
   {
@@ -227,14 +226,6 @@ function createMissionControlViewsStore({ dataDir, now = Date.now } = {}) {
 
 function cardMatchesSavedView(card, filters = {}, now = Date.now()) {
   if (filters.lane && card.lane !== filters.lane) {
-    return false;
-  }
-
-  if (filters.dispatch && card.dispatch !== filters.dispatch) {
-    return false;
-  }
-
-  if (filters.dispatchOwner && card.dispatchOwner !== filters.dispatchOwner) {
     return false;
   }
 

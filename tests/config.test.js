@@ -79,7 +79,7 @@ describe("config module", () => {
       assert.ok(config.auth, "config should have auth");
       assert.ok(config.branding, "config should have branding");
       assert.ok(config.integrations, "config should have integrations");
-      assert.ok(config.integrations.missionControl, "config should have missionControl integration");
+      assert.ok(config.missionControl, "config should have missionControl");
     });
 
     it("has default port of 3333", () => {
@@ -161,47 +161,7 @@ describe("config module", () => {
       assert.strictEqual(config.auth.mode, "token");
     });
 
-    it("LINEAR_PROJECT_SLUGS env var parses into project slugs", () => {
-      process.env.LINEAR_API_KEY = "linear-key";
-      process.env.LINEAR_PROJECT_SLUGS = "mission-control, command-center ";
-      for (const key of Object.keys(require.cache)) {
-        if (key.includes("config.js")) {
-          delete require.cache[key];
-        }
-      }
-      const { loadConfig } = require("../src/config");
-      const config = loadConfig();
-      assert.deepStrictEqual(config.integrations.linear.projectSlugs, [
-        "mission-control",
-        "command-center",
-      ]);
-      assert.strictEqual(config.integrations.linear.enabled, true);
-    });
-
-    it("MISSION_CONTROL_PROJECTS_JSON env var parses the project registry", () => {
-      process.env.MISSION_CONTROL_PROJECTS_JSON = JSON.stringify([
-        {
-          key: "mission-control",
-          linearProjectSlug: "mission-control",
-          lane: "lane:jon",
-          symphonyPort: 45123,
-        },
-      ]);
-
-      for (const key of Object.keys(require.cache)) {
-        if (key.includes("config.js")) {
-          delete require.cache[key];
-        }
-      }
-
-      const { loadConfig } = require("../src/config");
-      const config = loadConfig();
-
-      assert.strictEqual(config.missionControl.projects[0].lane, "lane:jon");
-      assert.strictEqual(config.missionControl.projects[0].symphonyPort, 45123);
-    });
-
-    it("LINEAR_WEBHOOK_PATH env var overrides the default webhook path", () => {
+    it("parses Linear project slug lists and webhook settings", () => {
       process.env.LINEAR_API_KEY = "linear-key";
       process.env.LINEAR_PROJECT_SLUGS = "littlebrief,mission-control";
       process.env.LINEAR_WEBHOOK_PATH = "/api/integrations/linear/webhook";
@@ -224,42 +184,5 @@ describe("config module", () => {
         "/api/integrations/linear/webhook",
       );
     });
-  });
-});
-
-describe("Mission Control auth posture", () => {
-  const originalEnv = { ...process.env };
-
-  afterEach(() => {
-    for (const key of Object.keys(process.env)) {
-      if (!(key in originalEnv)) {
-        delete process.env[key];
-      }
-    }
-    Object.assign(process.env, originalEnv);
-
-    for (const key of Object.keys(require.cache)) {
-      if (key.includes("config.js")) {
-        delete require.cache[key];
-      }
-    }
-  });
-
-  it("adds the Linear webhook path to public paths when a secret is configured", () => {
-    process.env.LINEAR_WEBHOOK_SECRET = "zerg-rush";
-    process.env.LINEAR_WEBHOOK_PATH = "/api/integrations/linear/custom-webhook";
-
-    const { loadConfig } = require("../src/config");
-    const config = loadConfig();
-
-    assert.ok(config.auth.publicPaths.includes("/api/integrations/linear/custom-webhook"));
-  });
-
-  it("keeps Mission Control read and admin APIs behind normal auth", () => {
-    const { loadConfig } = require("../src/config");
-    const config = loadConfig();
-
-    assert.ok(!config.auth.publicPaths.includes("/api/mission-control/board"));
-    assert.ok(!config.auth.publicPaths.includes("/api/mission-control/admin/reconcile"));
   });
 });

@@ -116,66 +116,6 @@ function normalizeWebhookIssue(payload) {
   };
 }
 
-function collectLinkedIssueIds(issues = []) {
-  return [
-    ...new Set(
-      issues
-        .flatMap((issue) =>
-          [issue?.parentIssue?.id]
-            .concat(issue?.linkedIssueIds || [])
-            .concat((issue?.linkedIssues || []).map((linkedIssue) => linkedIssue?.id))
-            .filter(Boolean),
-        )
-        .filter(Boolean),
-    ),
-  ];
-}
-
-function mergeIssueCollections(primaryIssues = [], supplementalIssues = []) {
-  const issuesById = new Map();
-
-  for (const issue of primaryIssues.concat(supplementalIssues)) {
-    if (!issue?.id) {
-      continue;
-    }
-    issuesById.set(issue.id, issue);
-  }
-
-  return issuesById;
-}
-
-function hydrateLinkedIssues(issue, issuesById) {
-  if (!issue?.id) {
-    return issue;
-  }
-
-  const linkedIssues = Array.isArray(issue.linkedIssues) ? issue.linkedIssues : [];
-  const hydratedLinkedIssues = linkedIssues.map((linkedIssue) => {
-    const current = issuesById.get(linkedIssue?.id);
-    if (!current) {
-      return linkedIssue;
-    }
-
-    return {
-      ...current,
-      linkRole: linkedIssue.linkRole || current.linkRole || "related",
-      relationType: linkedIssue.relationType || current.relationType || null,
-    };
-  });
-
-  return {
-    ...issue,
-    linkedIssues: hydratedLinkedIssues,
-    linkedIssueIds: collectLinkedIssueIds([issue]),
-    linkedIssueIdentifiers: [
-      ...new Set(hydratedLinkedIssues.map((entry) => entry?.identifier).filter(Boolean)),
-    ],
-    linkedIssueProjectSlugs: [
-      ...new Set(hydratedLinkedIssues.map((entry) => entry?.project?.slug).filter(Boolean)),
-    ],
-  };
-}
-
 function createLinearSyncEngine(options = {}) {
   const config = {
     enabled: Boolean(options.config?.enabled || options.config?.apiKey),
@@ -193,7 +133,6 @@ function createLinearSyncEngine(options = {}) {
   const clearIntervalFn = options.clearIntervalFn || clearInterval;
   const setTimeoutFn = options.setTimeoutFn || setTimeout;
   const clearTimeoutFn = options.clearTimeoutFn || clearTimeout;
-  const onStateChange = options.onStateChange || (() => {});
   const linearClient = options.client || createLinearClient({ apiKey: config.apiKey });
   const store = createLinearSyncStore({
     dataDir: options.dataDir,
@@ -204,8 +143,6 @@ function createLinearSyncEngine(options = {}) {
       enabled: Boolean(config.webhookSecret),
       path: config.webhookPath,
     },
-    registry: options.registry || null,
-    onChange: onStateChange,
   });
 
   let pollHandle = null;
@@ -218,35 +155,6 @@ function createLinearSyncEngine(options = {}) {
 
   function getPublicState() {
     return store.getPublicState();
-  }
-
-  async function hydrateIssuesByIds(issueIds, { source = "manual" } = {}) {
-    const normalizedIds = [...new Set((issueIds || []).filter(Boolean))];
-    if (normalizedIds.length === 0 || typeof linearClient.fetchIssuesByIds !== "function") {
-      return getPublicState();
-    }
-
-    const fetchedIssues = await linearClient.fetchIssuesByIds({ issueIds: normalizedIds });
-    const issuesById = mergeIssueCollections(
-      Object.values(store.getSnapshot().cards || {}),
-      fetchedIssues,
-    );
-    const materializedIssues = fetchedIssues.map((issue) => hydrateLinkedIssues(issue, issuesById));
-
-    for (const issue of materializedIssues) {
-      store.upsertCard(issue, {
-        source,
-        receivedAt: isoNow(now),
-      });
-    }
-
-    store.updateSync({
-      lastSuccessfulAt: isoNow(now),
-      lastReason: source,
-      lastFetchedCount: materializedIssues.length,
-    });
-
-    return getPublicState();
   }
 
   async function reconcile({ reason = "poll" } = {}) {
@@ -301,23 +209,10 @@ function createLinearSyncEngine(options = {}) {
           projectSlugs: config.projectSlugs,
           updatedAfter,
         });
-        const persistedIssues = Object.values(store.getSnapshot().cards || {});
-        const knownIssueIds = new Set(remoteIssues.map((issue) => issue.id).filter(Boolean));
-        const supplementalIssueIds = collectLinkedIssueIds(
-          remoteIssues.concat(persistedIssues),
-        ).filter((issueId) => !knownIssueIds.has(issueId));
-        const supplementalIssues =
-          supplementalIssueIds.length > 0 && typeof linearClient.fetchIssuesByIds === "function"
-            ? await linearClient.fetchIssuesByIds({ issueIds: supplementalIssueIds })
-            : [];
-        const issuesById = mergeIssueCollections(remoteIssues, supplementalIssues);
-        const materializedIssues = [...issuesById.values()].map((issue) =>
-          hydrateLinkedIssues(issue, issuesById),
-        );
 
         let changedCount = 0;
         let cursor = priorCursor;
-        for (const issue of materializedIssues) {
+        for (const issue of remoteIssues) {
           const result = store.upsertCard(issue, {
             source: reason === "webhook" ? "webhook-reconcile" : "poller",
             receivedAt: attemptAt,
@@ -336,7 +231,7 @@ function createLinearSyncEngine(options = {}) {
             },
             lastSuccessfulAt: isoNow(now),
             lastError: null,
-            lastFetchedCount: materializedIssues.length,
+            lastFetchedCount: remoteIssues.length,
             lastChangedCount: changedCount,
           },
           {
@@ -345,7 +240,7 @@ function createLinearSyncEngine(options = {}) {
             payload: {
               reason,
               updatedAfter: cursor || priorCursor || attemptAt,
-              fetchedCount: materializedIssues.length,
+              fetchedCount: remoteIssues.length,
               changedCount,
             },
           },
@@ -396,18 +291,10 @@ function createLinearSyncEngine(options = {}) {
 
     const signature = headers["linear-signature"] || headers["Linear-Signature"];
     if (!verifySignature(rawBody, signature, config.webhookSecret)) {
-      store.updateSync(
-        {
-          lastError: "Invalid Linear webhook signature",
-        },
-        {
-          type: "mission-control.linear.webhook.rejected",
-          source: "webhook",
-          payload: {
-            reason: "invalid-signature",
-          },
-        },
-      );
+      store.getSnapshot().sync.lastError = "Invalid Linear webhook signature";
+      store.appendAuditEvent("mission-control.linear.webhook.rejected", {
+        reason: "invalid-signature",
+      });
       return {
         statusCode: 401,
         body: { error: "Invalid Linear webhook signature" },
@@ -418,19 +305,10 @@ function createLinearSyncEngine(options = {}) {
     try {
       payload = rawBody ? JSON.parse(rawBody) : {};
     } catch (error) {
-      store.updateSync(
-        {
-          lastError: `Invalid JSON body: ${error.message}`,
-        },
-        {
-          type: "mission-control.linear.webhook.rejected",
-          source: "webhook",
-          payload: {
-            reason: "invalid-json",
-            error: error.message,
-          },
-        },
-      );
+      store.appendAuditEvent("mission-control.linear.webhook.rejected", {
+        reason: "invalid-json",
+        error: error.message,
+      });
       return {
         statusCode: 400,
         body: { error: `Invalid JSON body: ${error.message}` },
@@ -438,18 +316,9 @@ function createLinearSyncEngine(options = {}) {
     }
 
     if (!isFreshTimestamp(payload.webhookTimestamp, now)) {
-      store.updateSync(
-        {
-          lastError: "Stale Linear webhook payload",
-        },
-        {
-          type: "mission-control.linear.webhook.rejected",
-          source: "webhook",
-          payload: {
-            reason: "stale-payload",
-          },
-        },
-      );
+      store.appendAuditEvent("mission-control.linear.webhook.rejected", {
+        reason: "stale-payload",
+      });
       return {
         statusCode: 401,
         body: { error: "Stale Linear webhook payload" },
@@ -527,9 +396,7 @@ function createLinearSyncEngine(options = {}) {
         store.updateSync(
           {
             status: "disabled",
-            lastError: config.apiKey
-              ? "No Linear project slugs configured"
-              : "Linear sync disabled",
+            lastError: config.apiKey ? "No Linear project slugs configured" : "Linear sync disabled",
           },
           {
             type: "mission-control.linear.sync.disabled",
@@ -565,11 +432,9 @@ function createLinearSyncEngine(options = {}) {
   }
 
   return {
-    bootstrap: () => store.bootstrap(),
     start,
     stop,
     reconcile,
-    hydrateIssuesByIds,
     handleWebhook,
     getPublicState,
     getTimelineForCard: (reference) => store.getTimelineForCard(reference),

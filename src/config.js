@@ -184,16 +184,16 @@ function expandPath(p) {
     .replace(/\$\{HOME\}/g, HOME);
 }
 
-function envBoolean(value, fallback) {
-  if (value === undefined || value === null || value === "") {
-    return fallback;
+function parseList(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
   }
 
-  if (typeof value === "boolean") {
-    return value;
-  }
-
-  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
+  return String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -362,6 +362,12 @@ function loadConfig() {
     },
 
     // Mission Control foundation config
+    missionControl: {
+      projects: fileConfig.missionControl?.projects || [],
+      agents: fileConfig.missionControl?.agents || [],
+      discordDestinations: fileConfig.missionControl?.discordDestinations || [],
+    },
+
     missionControl: {
       projects: fileConfig.missionControl?.projects || [],
       agents: fileConfig.missionControl?.agents || [],

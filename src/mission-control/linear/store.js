@@ -1,28 +1,50 @@
 const fs = require("fs");
 const path = require("path");
 
-const {
-  CARDS_SNAPSHOT_FILENAME,
-  EVENT_LOG_FILENAME,
-  EVENT_VERSION,
-  REGISTRY_SNAPSHOT_FILENAME,
-  STORE_VERSION,
-  SYNC_STATE_FILENAME,
-  appendJsonl,
-  atomicWriteJson,
-  readJsonDocument,
-  readJsonlEvents,
-  stableStringify,
-} = require("../store");
-
+const SNAPSHOT_VERSION = 1;
+const SNAPSHOT_FILENAME = "linear-sync-snapshot.json";
+const EVENT_LOG_FILENAME = "linear-sync-events.jsonl";
 const RECENT_DELIVERY_LIMIT = 100;
 
 function isoNow(now = Date.now) {
   return new Date(now()).toISOString();
 }
 
+function sortObject(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortObject);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.keys(value)
+    .sort()
+    .reduce((result, key) => {
+      result[key] = sortObject(value[key]);
+      return result;
+    }, {});
+}
+
+function stableStringify(value, spacing = 0) {
+  return JSON.stringify(sortObject(value), null, spacing);
+}
+
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function atomicWriteJson(filePath, value) {
+  const dirPath = path.dirname(filePath);
+  ensureDir(dirPath);
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, `${stableStringify(value, 2)}\n`, "utf8");
+  fs.renameSync(tempPath, filePath);
+}
+
+function appendJsonLine(filePath, value) {
+  ensureDir(path.dirname(filePath));
+  fs.appendFileSync(filePath, `${stableStringify(value)}\n`, "utf8");
 }
 
 function normalizeCard(input) {
@@ -80,101 +102,6 @@ function normalizeCard(input) {
           }))
           .sort((left, right) => (left.name || "").localeCompare(right.name || ""))
       : [],
-    parentIssue: input.parentIssue
-      ? {
-          id: input.parentIssue.id || null,
-          identifier: input.parentIssue.identifier || null,
-          title: input.parentIssue.title || "Untitled",
-          updatedAt: input.parentIssue.updatedAt || null,
-          completedAt: input.parentIssue.completedAt || null,
-          canceledAt: input.parentIssue.canceledAt || null,
-          archivedAt: input.parentIssue.archivedAt || null,
-          state: input.parentIssue.state
-            ? {
-                id: input.parentIssue.state.id || null,
-                name: input.parentIssue.state.name || null,
-                type: input.parentIssue.state.type || null,
-                color: input.parentIssue.state.color || null,
-              }
-            : null,
-          project: input.parentIssue.project
-            ? {
-                id: input.parentIssue.project.id || null,
-                name: input.parentIssue.project.name || null,
-                slug: input.parentIssue.project.slug || null,
-                progress: input.parentIssue.project.progress ?? null,
-              }
-            : null,
-          labels: Array.isArray(input.parentIssue.labels)
-            ? input.parentIssue.labels
-                .map((label) => ({
-                  id: label.id || null,
-                  name: label.name || null,
-                  color: label.color || null,
-                }))
-                .sort((left, right) => (left.name || "").localeCompare(right.name || ""))
-            : [],
-          linkRole: input.parentIssue.linkRole || "parent",
-          relationType: input.parentIssue.relationType || null,
-        }
-      : null,
-    linkedIssues: Array.isArray(input.linkedIssues)
-      ? input.linkedIssues
-          .map((issue) => ({
-            id: issue.id || null,
-            identifier: issue.identifier || null,
-            title: issue.title || "Untitled",
-            updatedAt: issue.updatedAt || null,
-            completedAt: issue.completedAt || null,
-            canceledAt: issue.canceledAt || null,
-            archivedAt: issue.archivedAt || null,
-            state: issue.state
-              ? {
-                  id: issue.state.id || null,
-                  name: issue.state.name || null,
-                  type: issue.state.type || null,
-                  color: issue.state.color || null,
-                }
-              : null,
-            project: issue.project
-              ? {
-                  id: issue.project.id || null,
-                  name: issue.project.name || null,
-                  slug: issue.project.slug || null,
-                  progress: issue.project.progress ?? null,
-                }
-              : null,
-            labels: Array.isArray(issue.labels)
-              ? issue.labels
-                  .map((label) => ({
-                    id: label.id || null,
-                    name: label.name || null,
-                    color: label.color || null,
-                  }))
-                  .sort((left, right) => (left.name || "").localeCompare(right.name || ""))
-              : [],
-            linkRole: issue.linkRole || "related",
-            relationType: issue.relationType || null,
-          }))
-          .sort((left, right) =>
-            (left.identifier || left.id || "").localeCompare(right.identifier || right.id || ""),
-          )
-      : [],
-    linkedIssueIds: Array.isArray(input.linkedIssueIds)
-      ? [...new Set(input.linkedIssueIds.filter(Boolean))].sort((left, right) =>
-          left.localeCompare(right),
-        )
-      : [],
-    linkedIssueIdentifiers: Array.isArray(input.linkedIssueIdentifiers)
-      ? [...new Set(input.linkedIssueIdentifiers.filter(Boolean))].sort((left, right) =>
-          left.localeCompare(right),
-        )
-      : [],
-    linkedIssueProjectSlugs: Array.isArray(input.linkedIssueProjectSlugs)
-      ? [...new Set(input.linkedIssueProjectSlugs.filter(Boolean))].sort((left, right) =>
-          left.localeCompare(right),
-        )
-      : [],
     cycle: input.cycle
       ? {
           id: input.cycle.id || null,
@@ -187,11 +114,10 @@ function normalizeCard(input) {
   };
 }
 
-function createInitialSnapshot({ now, pollIntervalMs, projectSlugs, webhook, registry = null }) {
+function createInitialSnapshot({ now, pollIntervalMs, projectSlugs, webhook }) {
   return {
-    version: STORE_VERSION,
+    version: SNAPSHOT_VERSION,
     updatedAt: isoNow(now),
-    registry,
     cards: {},
     eventCount: 0,
     sync: {
@@ -225,99 +151,13 @@ function createInitialSnapshot({ now, pollIntervalMs, projectSlugs, webhook, reg
   };
 }
 
-function mergeSync(current, partial) {
-  return {
-    ...current,
-    ...partial,
-    persistence: {
-      ...current.persistence,
-      ...(partial.persistence || {}),
-    },
-    webhook: {
-      ...current.webhook,
-      ...(partial.webhook || {}),
-    },
-  };
-}
-
-function createRegistrySnapshot(registry, now) {
-  return {
-    kind: "mission-control.registry.snapshot",
-    version: STORE_VERSION,
-    updatedAt: isoNow(now),
-    registry,
-  };
-}
-
-function createCardsSnapshot(snapshot, now) {
-  return {
-    kind: "mission-control.cards.snapshot",
-    version: STORE_VERSION,
-    updatedAt: isoNow(now),
-    eventCount: snapshot.eventCount,
-    cards: snapshot.cards,
-  };
-}
-
-function createSyncStateSnapshot(snapshot, now) {
-  return {
-    kind: "mission-control.sync-state",
-    version: STORE_VERSION,
-    updatedAt: isoNow(now),
-    sync: snapshot.sync,
-  };
-}
-
-function applyEvent(snapshot, event) {
-  snapshot.eventCount = Math.max(
-    snapshot.eventCount,
-    Number(event.sequence || snapshot.eventCount + 1),
-  );
-
-  switch (event.type) {
-    case "mission-control.registry.bootstrapped":
-      snapshot.registry = event.payload?.registry || snapshot.registry;
-      break;
-    case "mission-control.linear.card-upserted":
-      if (event.payload?.card?.id) {
-        snapshot.cards[event.payload.card.id] = event.payload.card;
-      }
-      break;
-    case "mission-control.linear.webhook.received":
-    case "mission-control.linear.webhook.duplicate":
-      snapshot.sync.lastWebhookAt = event.payload?.receivedAt || event.occurredAt || null;
-      snapshot.sync.webhook.lastDeliveryId = event.deliveryId || null;
-      if (Array.isArray(event.payload?.recentDeliveryIds)) {
-        snapshot.sync.webhook.recentDeliveryIds = event.payload.recentDeliveryIds;
-      }
-      break;
-    default:
-      if (event.payload?.sync) {
-        snapshot.sync = mergeSync(snapshot.sync, event.payload.sync);
-      }
-      break;
-  }
-}
-
-function createLinearSyncStore({
-  dataDir,
-  now = Date.now,
-  pollIntervalMs,
-  projectSlugs,
-  webhook,
-  registry = null,
-  onChange = () => {},
-}) {
+function createLinearSyncStore({ dataDir, now = Date.now, pollIntervalMs, projectSlugs, webhook }) {
   const syncDir = path.join(dataDir, "mission-control");
-  const registrySnapshotPath = path.join(syncDir, REGISTRY_SNAPSHOT_FILENAME);
-  const cardsSnapshotPath = path.join(syncDir, CARDS_SNAPSHOT_FILENAME);
-  const syncStatePath = path.join(syncDir, SYNC_STATE_FILENAME);
+  const snapshotPath = path.join(syncDir, SNAPSHOT_FILENAME);
   const eventLogPath = path.join(syncDir, EVENT_LOG_FILENAME);
 
   let persistenceEnabled = true;
-  let snapshot = createInitialSnapshot({ now, pollIntervalMs, projectSlugs, webhook, registry });
-  let loadedRegistry = null;
-  const initializationWarnings = [];
+  let snapshot = createInitialSnapshot({ now, pollIntervalMs, projectSlugs, webhook });
 
   try {
     ensureDir(syncDir);
@@ -329,65 +169,30 @@ function createLinearSyncStore({
   }
 
   try {
-    loadedRegistry = readJsonDocument(registrySnapshotPath, {
-      kind: "mission-control.registry.snapshot",
-      version: STORE_VERSION,
-    });
-  } catch (error) {
-    initializationWarnings.push(error.message);
-  }
-
-  try {
-    const cardsDoc = readJsonDocument(cardsSnapshotPath, {
-      kind: "mission-control.cards.snapshot",
-      version: STORE_VERSION,
-    });
-    if (cardsDoc) {
-      snapshot.cards = cardsDoc.cards || {};
-      snapshot.eventCount = Number(cardsDoc.eventCount || 0);
+    if (persistenceEnabled && fs.existsSync(snapshotPath)) {
+      const loaded = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
+      snapshot = {
+        ...snapshot,
+        ...loaded,
+        cards: loaded.cards || {},
+        sync: {
+          ...snapshot.sync,
+          ...(loaded.sync || {}),
+          persistence: {
+            ...snapshot.sync.persistence,
+            ...(loaded.sync?.persistence || {}),
+          },
+          webhook: {
+            ...snapshot.sync.webhook,
+            ...(loaded.sync?.webhook || {}),
+          },
+        },
+      };
     }
   } catch (error) {
-    initializationWarnings.push(error.message);
-  }
-
-  try {
-    const syncDoc = readJsonDocument(syncStatePath, {
-      kind: "mission-control.sync-state",
-      version: STORE_VERSION,
-    });
-    if (syncDoc?.sync) {
-      snapshot.sync = mergeSync(snapshot.sync, syncDoc.sync);
-    }
-  } catch (error) {
-    initializationWarnings.push(error.message);
-  }
-
-  if (!snapshot.registry && loadedRegistry?.registry) {
-    snapshot.registry = loadedRegistry.registry;
-  }
-
-  try {
-    const events = readJsonlEvents(eventLogPath);
-    if (events.length > 0) {
-      snapshot = createInitialSnapshot({
-        now,
-        pollIntervalMs,
-        projectSlugs,
-        webhook,
-        registry: snapshot.registry,
-      });
-      for (const event of events) {
-        applyEvent(snapshot, event);
-      }
-    }
-  } catch (error) {
-    initializationWarnings.push(error.message);
-  }
-
-  if (initializationWarnings.length > 0) {
-    snapshot.sync.status = snapshot.sync.status === "disabled" ? "disabled" : "error";
-    snapshot.sync.lastError = initializationWarnings.join("; ");
-    snapshot.sync.persistence.lastWriteError = initializationWarnings.join("; ");
+    snapshot.sync.status = "error";
+    snapshot.sync.lastError = `Failed to load Linear snapshot: ${error.message}`;
+    snapshot.sync.persistence.lastWriteError = error.message;
   }
 
   function computeLagMs() {
@@ -395,7 +200,7 @@ function createLinearSyncStore({
     return Math.max(0, now() - Date.parse(snapshot.sync.lastSuccessfulAt));
   }
 
-  function persistSnapshots() {
+  function persistSnapshot() {
     snapshot.updatedAt = isoNow(now);
     snapshot.sync.persistence.enabled = persistenceEnabled;
     if (!persistenceEnabled) {
@@ -403,11 +208,7 @@ function createLinearSyncStore({
     }
 
     try {
-      if (snapshot.registry) {
-        atomicWriteJson(registrySnapshotPath, createRegistrySnapshot(snapshot.registry, now));
-      }
-      atomicWriteJson(cardsSnapshotPath, createCardsSnapshot(snapshot, now));
-      atomicWriteJson(syncStatePath, createSyncStateSnapshot(snapshot, now));
+      atomicWriteJson(snapshotPath, snapshot);
       snapshot.sync.persistence.lastWriteAt = isoNow(now);
       snapshot.sync.persistence.lastWriteError = null;
     } catch (error) {
@@ -418,21 +219,9 @@ function createLinearSyncStore({
     }
   }
 
-  function emitChange(change) {
-    try {
-      onChange({
-        ...change,
-        publicState: getPublicState(),
-      });
-    } catch (_error) {
-      // Keep store mutations resilient even if listeners fail.
-    }
-  }
-
   function appendAuditEvent(type, payload = {}, context = {}) {
     snapshot.eventCount += 1;
     const event = {
-      version: EVENT_VERSION,
       sequence: snapshot.eventCount,
       type,
       occurredAt: context.occurredAt || isoNow(now),
@@ -449,7 +238,7 @@ function createLinearSyncStore({
     }
 
     try {
-      appendJsonl(eventLogPath, event);
+      appendJsonLine(eventLogPath, event);
       snapshot.sync.persistence.lastWriteAt = event.occurredAt;
       snapshot.sync.persistence.lastWriteError = null;
     } catch (error) {
@@ -463,25 +252,16 @@ function createLinearSyncStore({
   }
 
   function readEventLog() {
-    return readJsonlEvents(eventLogPath);
-  }
-
-  function bootstrap() {
-    const registryChanged =
-      snapshot.registry &&
-      stableStringify(snapshot.registry) !== stableStringify(loadedRegistry?.registry || null);
-    const logMissing = !fs.existsSync(eventLogPath);
-
-    if (snapshot.registry && (registryChanged || logMissing)) {
-      appendAuditEvent(
-        "mission-control.registry.bootstrapped",
-        { registry: snapshot.registry },
-        { source: "startup" },
-      );
+    if (!fs.existsSync(eventLogPath)) {
+      return [];
     }
 
-    persistSnapshots();
-    return getPublicState();
+    return fs
+      .readFileSync(eventLogPath, "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
   }
 
   function noteWebhookDelivery({ deliveryId, receivedAt, issue, duplicate = false }) {
@@ -490,20 +270,14 @@ function createLinearSyncStore({
     if (deliveryId) {
       snapshot.sync.webhook.recentDeliveryIds = [
         deliveryId,
-        ...snapshot.sync.webhook.recentDeliveryIds.filter(
-          (existingId) => existingId !== deliveryId,
-        ),
+        ...snapshot.sync.webhook.recentDeliveryIds.filter((existingId) => existingId !== deliveryId),
       ].slice(0, RECENT_DELIVERY_LIMIT);
     }
 
     appendAuditEvent(
-      duplicate
-        ? "mission-control.linear.webhook.duplicate"
-        : "mission-control.linear.webhook.received",
+      duplicate ? "mission-control.linear.webhook.duplicate" : "mission-control.linear.webhook.received",
       {
         projectSlug: issue?.project?.slug || null,
-        receivedAt,
-        recentDeliveryIds: snapshot.sync.webhook.recentDeliveryIds,
       },
       {
         occurredAt: receivedAt,
@@ -514,8 +288,7 @@ function createLinearSyncStore({
         deliveryId,
       },
     );
-    persistSnapshots();
-    emitChange({ type: "webhook-delivery", deliveryId, receivedAt, duplicate });
+    persistSnapshot();
   }
 
   function hasSeenWebhookDelivery(deliveryId) {
@@ -524,36 +297,32 @@ function createLinearSyncStore({
   }
 
   function updateSync(partial, audit = {}) {
-    snapshot.sync = mergeSync(snapshot.sync, partial);
+    snapshot.sync = {
+      ...snapshot.sync,
+      ...partial,
+      persistence: {
+        ...snapshot.sync.persistence,
+        ...(partial.persistence || {}),
+      },
+      webhook: {
+        ...snapshot.sync.webhook,
+        ...(partial.webhook || {}),
+      },
+    };
     snapshot.sync.lagMs = computeLagMs();
 
     if (audit.type) {
-      appendAuditEvent(
-        audit.type,
-        {
-          ...(audit.payload || {}),
-          sync: partial,
-        },
-        {
-          occurredAt: audit.occurredAt,
-          source: audit.source,
-          cardId: audit.cardId,
-          issueId: audit.issueId,
-          identifier: audit.identifier,
-          deliveryId: audit.deliveryId,
-        },
-      );
+      appendAuditEvent(audit.type, audit.payload || {}, {
+        occurredAt: audit.occurredAt,
+        source: audit.source,
+        cardId: audit.cardId,
+        issueId: audit.issueId,
+        identifier: audit.identifier,
+        deliveryId: audit.deliveryId,
+      });
     }
 
-    persistSnapshots();
-    emitChange({
-      type: "sync-updated",
-      partial,
-      sync: snapshot.sync,
-      source: audit.source || partial.lastReason || null,
-      auditType: audit.type || null,
-      occurredAt: audit.occurredAt || isoNow(now),
-    });
+    persistSnapshot();
   }
 
   function upsertCard(cardInput, context = {}) {
@@ -582,13 +351,7 @@ function createLinearSyncStore({
           deliveryId: context.deliveryId || null,
         },
       );
-      persistSnapshots();
-      emitChange({
-        type: "card-observed",
-        source: context.source || null,
-        cardId,
-        issueId: normalizedCard.id,
-      });
+      persistSnapshot();
       return {
         changed: false,
         action: "noop",
@@ -622,15 +385,7 @@ function createLinearSyncStore({
         deliveryId: context.deliveryId || null,
       },
     );
-    persistSnapshots();
-    emitChange({
-      type: "card-upserted",
-      card,
-      source: context.source || null,
-      cardId: card.id,
-      issueId: normalizedCard.id,
-      action,
-    });
+    persistSnapshot();
 
     return {
       changed: true,
@@ -641,23 +396,10 @@ function createLinearSyncStore({
 
   function getTimelineForCard(reference = {}) {
     const wantedCardIds = new Set(
-      []
-        .concat(reference.cardIds || [])
-        .concat([reference.cardId, reference.issueId ? `mc:${reference.issueId}` : null])
-        .filter(Boolean),
+      [reference.cardId, reference.issueId ? `mc:${reference.issueId}` : null].filter(Boolean),
     );
-    const wantedIssueIds = new Set(
-      []
-        .concat(reference.issueIds || [])
-        .concat([reference.issueId])
-        .filter(Boolean),
-    );
-    const wantedIdentifiers = new Set(
-      []
-        .concat(reference.identifiers || [])
-        .concat([reference.identifier])
-        .filter(Boolean),
-    );
+    const wantedIssueIds = new Set([reference.issueId].filter(Boolean));
+    const wantedIdentifiers = new Set([reference.identifier].filter(Boolean));
 
     return readEventLog().filter((event) => {
       if (event.type.startsWith("mission-control.linear.reconcile.")) {
@@ -684,7 +426,6 @@ function createLinearSyncStore({
     });
 
     return {
-      registry: snapshot.registry,
       masterCards: cards,
       stats: {
         totalCards: cards.length,
@@ -703,7 +444,6 @@ function createLinearSyncStore({
 
   return {
     appendAuditEvent,
-    bootstrap,
     getSnapshot,
     getPublicState,
     getTimelineForCard,

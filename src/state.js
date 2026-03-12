@@ -23,8 +23,7 @@ const { formatBytes, formatTimeAgo } = require("./utils");
  * @param {function} deps.runOpenClaw - function from openclaw module
  * @param {function} deps.extractJSON - function from openclaw module
  * @param {function} deps.readTranscript - function from sessions module
- * @param {function} deps.getMissionControlState - function returning Mission Control state
- * @param {function} deps.getAcpActivity - function returning ACP activity summary
+ * @param {function} [deps.getMissionControlState] - function from mission-control module
  */
 function createStateModule(deps) {
   const {
@@ -42,8 +41,7 @@ function createStateModule(deps) {
     runOpenClaw,
     extractJSON,
     readTranscript,
-    getMissionControlState = () => null,
-    getAcpActivity = () => null,
+    getMissionControlState,
   } = deps;
 
   const PATHS = CONFIG.paths;
@@ -376,7 +374,7 @@ function createStateModule(deps) {
     let cerebro = {};
     let missionControl = null;
     let subagents = [];
-    let acp = null;
+    let missionControl = null;
 
     // Get ALL sessions first for accurate statusCounts, then slice for display
     let allSessions = [];

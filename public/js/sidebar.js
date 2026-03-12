@@ -14,7 +14,6 @@
     cron: 0,
     jobs: 0,
     missionControl: 0,
-    acp: 0,
     memory: 0,
     cerebro: 0,
     operators: 0,
@@ -216,10 +215,6 @@
         data.missionControl.stats.staleCards || data.missionControl.stats.totalCards || 0;
     }
 
-    if (data.acp?.summary) {
-      sidebarState.acp = data.acp.summary.activeAgents || data.acp.summary.totalAgents || 0;
-    }
-
     // Update memory count
     if (data.memory) {
       sidebarState.memory = data.memory.fileCount || data.memory.totalFiles || 0;
@@ -263,7 +258,6 @@
       "nav-cron-count": sidebarState.cron,
       "nav-jobs-count": sidebarState.jobs || "-",
       "nav-mission-control-count": sidebarState.missionControl || "-",
-      "nav-acp-count": sidebarState.acp || "-",
       "nav-memory-count": sidebarState.memory,
       "nav-cerebro-count": sidebarState.cerebro,
       "nav-operator-count": sidebarState.operators,
