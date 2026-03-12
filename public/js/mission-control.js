@@ -236,6 +236,78 @@
     return "Unassigned";
   }
 
+  function isOutcomeCard(card) {
+    return card?.cardType === "outcome" || Boolean(card?.outcomeId);
+  }
+
+  function renderLinkedProjects(card) {
+    const projects = Array.isArray(card?.linkedProjects) ? card.linkedProjects : [];
+    if (projects.length === 0) {
+      return {
+        primary: resolveProjectLabel(card),
+        secondary: card.projectKey || resolveProjectValue(card),
+      };
+    }
+
+    return {
+      primary: projects
+        .slice(0, 2)
+        .map((project) => project.label)
+        .join(", "),
+      secondary:
+        projects.length > 2
+          ? `+${projects.length - 2} more · ${projects
+              .map((project) => project.linearProjectSlug)
+              .filter(Boolean)
+              .join(", ")}`
+          : projects
+              .map((project) => project.linearProjectSlug)
+              .filter(Boolean)
+              .join(", "),
+    };
+  }
+
+  function renderOutcomeSummary(card) {
+    const stats = card?.childStats || {};
+    const parts = [];
+    if (Number.isFinite(stats.matchedIssueCount) && Number.isFinite(stats.linkedIssueTargetCount)) {
+      parts.push(
+        `${stats.matchedIssueCount}/${stats.linkedIssueTargetCount} linked issues tracked`,
+      );
+    }
+    if (stats.completedIssueCount) {
+      parts.push(`${stats.completedIssueCount} done`);
+    }
+    if (stats.awaitingReviewIssueCount) {
+      parts.push(`${stats.awaitingReviewIssueCount} review`);
+    }
+    if (stats.blockedIssueCount) {
+      parts.push(`${stats.blockedIssueCount} blocked`);
+    }
+    if (stats.inProgressIssueCount) {
+      parts.push(`${stats.inProgressIssueCount} active`);
+    }
+    if (stats.unmatchedIssueCount) {
+      parts.push(`${stats.unmatchedIssueCount} pending link`);
+    }
+    return parts.join(" · ") || "Outcome rollup";
+  }
+
+  function renderDeepLinks(card) {
+    const links = Array.isArray(card?.links) ? card.links : [];
+    if (links.length === 0) {
+      return '<span class="mc-proof-text">No deep links</span>';
+    }
+
+    return links
+      .slice(0, 3)
+      .map(
+        (link) =>
+          `<a class=\"mc-proof-link\" href=\"${escapeHtml(link.url)}\" target=\"_blank\" rel=\"noreferrer\">${escapeHtml(link.label)}</a>`,
+      )
+      .join("<br>");
+  }
+
   function getCards() {
     return Array.isArray(state.board?.masterCards) ? state.board.masterCards : [];
   }
@@ -762,6 +834,10 @@
         const proofLink = card.latestProof?.url;
         const issueLink = card.url;
         const issueIdentifier = card.identifier || card.primaryLinearIdentifier || card.id;
+        const projectSummary = renderLinkedProjects(card);
+        const summaryNote = isOutcomeCard(card)
+          ? renderOutcomeSummary(card)
+          : card.summary || resolveProjectLabel(card);
         const responsibleAgents = (card.responsibleAgents || []).map((agent) =>
           humanizeToken(agent),
         );
@@ -772,6 +848,9 @@
         const linearState = card.state?.name
           ? `<div class="mc-table-note">Linear · ${escapeHtml(card.state.name)}</div>`
           : "";
+        const issueMeta = isOutcomeCard(card)
+          ? `<div class="mc-issue-meta">${escapeHtml(summaryNote)}</div>`
+          : `<div class="mc-issue-meta">${escapeHtml(summaryNote)}</div>`;
         const dispatchPill = `
           <span class="mc-chip ${dispatchClass(resolveDispatchValue(card))}">${escapeHtml(resolveDispatchLabel(card))}</span>
         `;
@@ -786,17 +865,18 @@
                       ? `<a class="mc-issue-title" href="${escapeHtml(issueLink)}" target="_blank" rel="noreferrer">${escapeHtml(issueIdentifier)}</a>`
                       : `<span class="mc-issue-title">${escapeHtml(issueIdentifier)}</span>`
                   }
+                  ${isOutcomeCard(card) ? '<span class="mc-group-label">Outcome</span>' : ""}
                   ${dispatchPill}
                 </div>
                 <div>${escapeHtml(card.title || "Untitled")}</div>
-                <div class="mc-issue-meta">${escapeHtml(card.summary || resolveProjectLabel(card))}</div>
+                ${issueMeta}
               </div>
             </td>
             <td><span class="mc-group-label">${escapeHtml(resolveLane(card))}</span></td>
             <td>
               <div class="mc-stack">
-                <div>${escapeHtml(resolveProjectLabel(card))}</div>
-                <div class="mc-table-note">${escapeHtml(card.projectKey || resolveProjectValue(card))}</div>
+                <div>${escapeHtml(projectSummary.primary || resolveProjectLabel(card))}</div>
+                <div class="mc-table-note">${escapeHtml(projectSummary.secondary || card.projectKey || resolveProjectValue(card))}</div>
               </div>
             </td>
             <td>
@@ -819,11 +899,13 @@
             <td>
               <div class="mc-stack">
                 ${
-                  proofLink
-                    ? `<a class="mc-proof-link" href="${escapeHtml(proofLink)}" target="_blank" rel="noreferrer">${escapeHtml(proofSummary)}</a>`
-                    : `<span class="mc-proof-text">${escapeHtml(proofSummary)}</span>`
+                  isOutcomeCard(card)
+                    ? renderDeepLinks(card)
+                    : proofLink
+                      ? `<a class="mc-proof-link" href="${escapeHtml(proofLink)}" target="_blank" rel="noreferrer">${escapeHtml(proofSummary)}</a>`
+                      : `<span class="mc-proof-text">${escapeHtml(proofSummary)}</span>`
                 }
-                <div class="mc-table-note">${escapeHtml(formatTimestamp(card.latestProof?.capturedAt || card.latestUpdate?.capturedAt))}</div>
+                <div class="mc-table-note">${escapeHtml(formatTimestamp(card.latestProof?.capturedAt || card.latestUpdate?.capturedAt || card.updatedAt))}</div>
               </div>
             </td>
             <td>

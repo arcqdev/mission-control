@@ -6,6 +6,7 @@ const SCHEMA_VERSION = 1;
 const MAX_ATTEMPTS = 4;
 const MAX_RECENT_NOTIFICATIONS = 50;
 const MAX_SETTLED_KEYS = 250;
+const MAX_ACTIVE_REVIEW_KEYS = 500;
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 5 * 60 * 1000;
 
@@ -115,6 +116,7 @@ function createInitialState(now = Date.now) {
     lastExceptionFingerprint: null,
     notifications: [],
     settledEventDestinations: [],
+    activeReviewKeys: [],
   };
 }
 
@@ -139,8 +141,18 @@ function uniqueDestinations(destinations) {
 }
 
 function buildDiscordPayload(notification) {
-  const color = notification.category === "completion" ? 0x3fb950 : 0xf85149;
-  const header = notification.category === "completion" ? "Mission complete" : "Mission exception";
+  const color =
+    notification.category === "completion"
+      ? 0x3fb950
+      : notification.category === "review"
+        ? 0xd29922
+        : 0xf85149;
+  const header =
+    notification.category === "completion"
+      ? "Mission complete"
+      : notification.category === "review"
+        ? "Human review required"
+        : "Mission exception";
   const fields = [];
 
   if (notification.identifier) {
@@ -309,6 +321,9 @@ function createMissionControlNotificationService({
         settledEventDestinations: Array.isArray(loaded.settledEventDestinations)
           ? loaded.settledEventDestinations.map(normalizeSettledEntry).filter((entry) => entry.key)
           : [],
+        activeReviewKeys: Array.isArray(loaded.activeReviewKeys)
+          ? loaded.activeReviewKeys.map((key) => cleanString(key)).filter(Boolean)
+          : [],
       };
     }
   } catch (error) {
@@ -332,6 +347,7 @@ function createMissionControlNotificationService({
 
     state.notifications = [...unsettled, ...settled];
     state.settledEventDestinations = state.settledEventDestinations.slice(-MAX_SETTLED_KEYS);
+    state.activeReviewKeys = state.activeReviewKeys.slice(-MAX_ACTIVE_REVIEW_KEYS);
   }
 
   function persist() {
@@ -396,9 +412,24 @@ function createMissionControlNotificationService({
       category: "completion",
       eventKey: `completion:${card.id}:${card.completedAt || card.updatedAt || isoNow(now)}`,
       occurredAt: card.completedAt || card.updatedAt || isoNow(now),
-      title: `${card.primaryLinearIdentifier || card.id} completed`,
+      title: `${card.identifier || card.primaryLinearIdentifier || card.id} completed`,
       summary: card.title,
-      identifier: card.primaryLinearIdentifier || card.id,
+      identifier: card.identifier || card.primaryLinearIdentifier || card.id,
+      cardId: card.id,
+      cardStatus: card.status,
+    };
+  }
+
+  function buildReviewNotification(card, child) {
+    return {
+      category: "review",
+      eventKey: `review:${card.id}:${child.id}:${child.updatedAt || child.completedAt || isoNow(now)}`,
+      occurredAt: child.updatedAt || isoNow(now),
+      title: `${card.identifier || card.primaryLinearIdentifier || card.id} needs human review`,
+      summary: [child.identifier || child.id, child.title, child.reviewReason]
+        .filter(Boolean)
+        .join(" · "),
+      identifier: child.identifier || card.identifier || card.primaryLinearIdentifier || card.id,
       cardId: card.id,
       cardStatus: card.status,
     };
@@ -535,6 +566,63 @@ function createMissionControlNotificationService({
     };
   }
 
+  function getReviewEntries(card) {
+    const children = Array.isArray(card?.linearChildren)
+      ? card.linearChildren
+      : card?.primaryLinearIssueId
+        ? [
+            {
+              id: card.primaryLinearIssueId,
+              identifier: card.primaryLinearIdentifier || card.identifier || card.id,
+              title: card.title,
+              updatedAt: card.updatedAt,
+              humanReviewRequired: card.humanReviewRequired,
+              blockedOnHumanReview: String(card.reviewReason || "").includes(
+                "blocked-on-human-review",
+              ),
+              reviewReason: card.reviewReason,
+            },
+          ]
+        : [];
+
+    return children.map((child) => ({
+      activeKey: `${card.id}:${child.id}`,
+      child,
+      active:
+        Boolean(child.humanReviewRequired) ||
+        Boolean(child.blockedOnHumanReview) ||
+        /review/.test(cleanString(child.state?.name || child.reviewReason).toLowerCase()),
+    }));
+  }
+
+  function syncReviewNotifications(card) {
+    const entries = getReviewEntries(card);
+    const activeKeysForCard = new Set(
+      entries.filter((entry) => entry.active).map((entry) => entry.activeKey),
+    );
+    const nextActiveKeys = state.activeReviewKeys.filter(
+      (key) => !key.startsWith(`${card.id}:`) || activeKeysForCard.has(key),
+    );
+    let changed = nextActiveKeys.length !== state.activeReviewKeys.length;
+
+    for (const entry of entries) {
+      if (!entry.active || state.activeReviewKeys.includes(entry.activeKey)) {
+        continue;
+      }
+      nextActiveKeys.push(entry.activeKey);
+      changed = true;
+      enqueueNotification(buildReviewNotification(card, entry.child), [getCompletionRoute(card)]);
+    }
+
+    if (changed) {
+      state.activeReviewKeys = nextActiveKeys;
+      persist();
+      emit();
+    }
+
+    return changed;
+  }
+
   function getExceptionRoutes() {
     const configured = uniqueDestinations(destinations);
     if (configured.length === 0) {
@@ -618,17 +706,26 @@ function createMissionControlNotificationService({
 
   function handleMissionControlChange(change, publicState) {
     if (change?.type === "card-upserted") {
-      const card = (publicState?.masterCards || []).find(
+      const cards = (publicState?.masterCards || []).filter(
         (entry) =>
           entry.id === change.cardId ||
           entry.primaryLinearIssueId === change.issueId ||
-          entry.primaryLinearIdentifier === change.identifier,
+          entry.primaryLinearIdentifier === change.identifier ||
+          (entry.linkedLinearIssueIds || []).includes(change.issueId) ||
+          (entry.linkedLinearIdentifiers || []).includes(change.identifier),
       );
-      if (!card || card.status !== "completed") {
-        return false;
+      let changed = false;
+
+      for (const card of cards) {
+        changed = syncReviewNotifications(card) || changed;
+        if (card.status === "completed") {
+          changed =
+            enqueueNotification(buildCompletionNotification(card), [getCompletionRoute(card)]) ||
+            changed;
+        }
       }
 
-      return enqueueNotification(buildCompletionNotification(card), [getCompletionRoute(card)]);
+      return changed;
     }
 
     if (change?.type === "sync-updated") {

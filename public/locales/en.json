@@ -30,7 +30,8 @@
     "autoRefresh": "Auto-refresh: 30s",
     "live": "Live: {time}",
     "updated": "Updated: {time}",
-    "missionControl": "Mission Control"
+    "missionControl": "Mission Control",
+    "acpAgents": "ACP Agents"
   },
   "stats": {
     "totalTokens": "Total Tokens",

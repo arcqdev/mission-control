@@ -30,7 +30,8 @@
     "autoRefresh": "自动刷新：30秒",
     "live": "实时：{time}",
     "updated": "更新：{time}",
-    "missionControl": "任务控制"
+    "missionControl": "任务控制",
+    "acpAgents": "ACP 代理"
   },
   "stats": {
     "totalTokens": "总 Token",

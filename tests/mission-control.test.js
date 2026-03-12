@@ -54,7 +54,7 @@ function createIssue(overrides = {}) {
   };
 }
 
-function createConfig() {
+function createConfig(overrides = {}) {
   return {
     integrations: {
       linear: {
@@ -65,6 +65,7 @@ function createConfig() {
         reconcileOverlapMs: 300000,
         webhookPath: "/api/integrations/linear/webhook",
         webhookSecret: "secret",
+        ...(overrides.integrations?.linear || {}),
       },
     },
     missionControl: {
@@ -76,7 +77,10 @@ function createConfig() {
           lane: "lane:jon",
           symphonyPort: 45123,
         },
+        ...((overrides.missionControl?.projects || []).slice(1) || []),
       ],
+      outcomes: overrides.missionControl?.outcomes || [],
+      discordDestinations: overrides.missionControl?.discordDestinations || [],
     },
   };
 }
@@ -167,11 +171,115 @@ describe("mission control service", () => {
 
     assert.ok(timeline.some((event) => event.type === "mission-control.linear.card-upserted"));
     assert.ok(replay.some((step) => step.snapshot?.identifier === "ARC-38"));
-    assert.ok(diagnostics.affectedCards.some((entry) => entry.primaryLinearIdentifier === "ARC-99"));
+    assert.ok(
+      diagnostics.affectedCards.some((entry) => entry.primaryLinearIdentifier === "ARC-99"),
+    );
     assert.strictEqual(
       diagnostics.affectedCards.find((entry) => entry.primaryLinearIdentifier === "ARC-99")
         .diagnostics.stale,
       true,
     );
+  });
+
+  it("rolls linked Linear issues into one outcome card without top-level dupes", async () => {
+    const dataDir = createTempDir();
+    const observedProjectSlugs = [];
+    const service = createMissionControlService({
+      config: createConfig({
+        integrations: {
+          linear: {
+            projectSlugs: ["littlebrief"],
+          },
+        },
+        missionControl: {
+          projects: [
+            {
+              key: "littlebrief",
+              repoPath: "~/dev/arcqdev/littlebrief",
+              linearProjectSlug: "littlebrief",
+              lane: "lane:jon",
+              symphonyPort: 45123,
+            },
+            {
+              key: "ops-board",
+              repoPath: "~/dev/arcqdev/ops-board",
+              linearProjectSlug: "ops-board",
+              lane: "lane:jon",
+              symphonyPort: null,
+            },
+          ],
+          outcomes: [
+            {
+              key: "jon-big-task",
+              missionKey: "mission-jon-big-task",
+              title: "Jon do this big task",
+              summary: "Parent outcome for a multi-board request.",
+              lane: "lane:jon",
+              linkedLinearIdentifiers: ["ARC-38", "OPS-12"],
+              linkedLinearProjectSlugs: ["littlebrief", "ops-board"],
+              linkedProjectKeys: ["littlebrief", "ops-board"],
+              links: [
+                {
+                  kind: "project",
+                  label: "Littlebrief board",
+                  url: "https://linear.app/arcqdev/project/littlebrief",
+                  projectSlug: "littlebrief",
+                },
+                {
+                  kind: "project",
+                  label: "Ops board",
+                  url: "https://linear.app/arcqdev/project/ops-board",
+                  projectSlug: "ops-board",
+                },
+              ],
+            },
+          ],
+        },
+      }),
+      dataDir,
+      now: () => Date.parse("2026-03-10T04:00:00.000Z"),
+      logger: { error() {}, log() {} },
+      linearClient: {
+        fetchIssuesForProjects: async ({ projectSlugs }) => {
+          observedProjectSlugs.push(...projectSlugs);
+          return [
+            createIssue(),
+            createIssue({
+              id: "issue-ops-12",
+              identifier: "OPS-12",
+              title: "Cross-board follow-up",
+              url: "https://linear.app/arcqdev/issue/OPS-12",
+              project: {
+                id: "project-2",
+                name: "Ops Board",
+                slug: "ops-board",
+                progress: 20,
+              },
+              updatedAt: "2026-03-10T03:00:00.000Z",
+            }),
+          ];
+        },
+      },
+      setIntervalFn: () => 1,
+      clearIntervalFn: () => {},
+      setTimeoutFn: () => 1,
+      clearTimeoutFn: () => {},
+    });
+
+    await service.reconcile({ reason: "manual" });
+    const state = service.getPublicState();
+    const outcome = state.masterCards.find((entry) => entry.outcomeId === "jon-big-task");
+
+    assert.ok(outcome, "expected rolled-up outcome card");
+    assert.strictEqual(state.stats.totalCards, 1);
+    assert.deepStrictEqual([...new Set(observedProjectSlugs)].sort(), ["littlebrief", "ops-board"]);
+    assert.strictEqual(outcome.identifier, "mission-jon-big-task");
+    assert.strictEqual(outcome.cardType, "outcome");
+    assert.strictEqual(outcome.linearChildren.length, 2);
+    assert.strictEqual(outcome.childStats.linkedIssueTargetCount, 2);
+    assert.strictEqual(outcome.childStats.matchedIssueCount, 2);
+    assert.strictEqual(outcome.linkedProjects.length, 2);
+    assert.ok(outcome.links.some((link) => link.kind === "project"));
+    assert.ok(outcome.links.some((link) => link.kind === "issue"));
   });
 });

@@ -6,6 +6,7 @@ Mission Control keeps Linear issue state in a local master-card snapshot using a
 
 - a mandatory 2-minute reconciliation poller for eventual correctness
 - an optional signed webhook fast-path for low-latency updates
+- an outcome rollup layer that groups explicit parent missions over linked child issues without changing the underlying Linear sync contract
 
 Snapshot and event-log files are persisted under the profile-aware Command Center data directory:
 
@@ -25,6 +26,8 @@ Response shape:
 - `stats.eventCount`: number of persisted card-upsert events
 - `sync`: reconciliation metadata, including cursor, lag, last error, and webhook delivery info
 
+Note: the raw Linear snapshot still stores one record per synchronized issue. Parent outcome rollups are built above this layer so Mission Control can suppress duplicate top-level board cards while preserving boring, robust reconcile semantics.
+
 ### `POST /api/integrations/linear/webhook`
 
 Optional webhook acceleration endpoint.
@@ -42,6 +45,7 @@ Set via environment variables or `config/dashboard*.json`:
 
 - `LINEAR_API_KEY`
 - `LINEAR_PROJECT_SLUGS` — comma-separated project slugs
+- plus any `missionControl.outcomes[*].linkedLinearProjectSlugs`, which are merged into the effective poll target set so linked child work across multiple boards/projects is watched automatically
 - `LINEAR_SYNC_INTERVAL_MS` — defaults to `120000`
 - `LINEAR_RECONCILE_OVERLAP_MS` — defaults to `300000`
 - `LINEAR_WEBHOOK_PATH` — defaults to `/api/integrations/linear/webhook`

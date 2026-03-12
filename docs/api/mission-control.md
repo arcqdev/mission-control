@@ -17,9 +17,18 @@ Response shape:
 - `version` — response schema version
 - `generatedAt` — response generation time
 - `updatedAt` — last Mission Control snapshot update time
-- `masterCards` — normalized card records
+- `masterCards` — normalized top-level board records; these can be standalone Linear-backed cards or explicit outcome rollups (`cardType: "outcome"`)
 - `stats` — board counts (`totalCards`, `eventCount`, `projectCount`, `teamCount`, `stateCount`, `assigneeCount`)
 - `sync` — current sync metadata and lag summary
+
+Outcome rollup cards include additional fields:
+
+- `outcomeId` — explicit parent outcome identifier
+- `missionKey` / `identifier` — stable operator-facing mission reference
+- `linearChildren` — linked child issue summaries that power status rollups
+- `childStats` — matched vs. terminal/review/blocked child counts
+- `linkedProjects` — project/board summaries for linked work across multiple Linear boards/projects
+- `links` — deep links for projects/boards/issues when configured or derivable
 
 ### `GET /api/mission-control/filters`
 
@@ -126,6 +135,17 @@ Payload shape:
 - `board` — present for `replay`
 
 This keeps the existing dashboard SSE channel intact while allowing Mission Control consumers to subscribe only to Mission Control deltas.
+
+## Outcome rollups
+
+Mission Control now treats Linear as a child-task system, not the top-level board model. Configure explicit parent outcomes under `missionControl.outcomes` and link them to child issues with `linkedLinearIdentifiers` and/or `linkedLinearIssueIds`.
+
+When an outcome is configured:
+
+- linked child issues are still reconciled through the existing Linear poller/webhook path
+- the board shows one parent outcome card instead of duplicating every linked child as a top-level board card
+- reconcile automatically widens the watched Linear project slug set to include `linkedLinearProjectSlugs`
+- completion and human-review Discord alerts are emitted from the parent outcome layer with deduplication
 
 ## Auth posture
 

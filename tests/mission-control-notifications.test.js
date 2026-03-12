@@ -94,7 +94,7 @@ function createIssue(overrides = {}) {
   };
 }
 
-function createConfig() {
+function createConfig(overrides = {}) {
   return {
     integrations: {
       linear: {
@@ -105,6 +105,7 @@ function createConfig() {
         reconcileOverlapMs: 300000,
         webhookPath: "/api/integrations/linear/webhook",
         webhookSecret: "secret",
+        ...(overrides.integrations?.linear || {}),
       },
     },
     missionControl: {
@@ -125,6 +126,7 @@ function createConfig() {
           allowedSenderIdentities: ["jon"],
         },
       ],
+      outcomes: overrides.missionControl?.outcomes || [],
     },
   };
 }
@@ -285,5 +287,125 @@ describe("Mission Control Discord notifications", () => {
 
     assert.strictEqual(calls, 4);
     assert.strictEqual(state.notifications.stats.deadLetters, 1);
+  });
+
+  it("sends one human-review alert per active review episode for rolled-up outcomes", async () => {
+    const dataDir = createTempDir();
+    const timers = createTimerHarness();
+    const calls = [];
+    const service = createMissionControlService({
+      config: createConfig({
+        missionControl: {
+          outcomes: [
+            {
+              key: "jon-review-rollup",
+              missionKey: "mission-jon-review-rollup",
+              title: "Jon review rollup",
+              lane: "lane:jon",
+              linkedLinearIdentifiers: ["ARC-36"],
+              linkedLinearProjectSlugs: ["littlebrief"],
+              linkedProjectKeys: ["littlebrief"],
+            },
+          ],
+        },
+      }),
+      dataDir,
+      now: () => Date.parse("2026-03-10T04:05:00.000Z"),
+      logger: { error() {}, warn() {} },
+      linearClient: {
+        fetchIssuesForProjects: async () => [
+          createIssue({
+            completedAt: null,
+            state: {
+              id: "state-review",
+              name: "Awaiting Review",
+              type: "review",
+              color: "#d29922",
+            },
+            updatedAt: "2026-03-10T04:00:00.000Z",
+          }),
+        ],
+      },
+      discordFetchImpl: async (url, options) => {
+        calls.push({ url, options });
+        return createDiscordResponse({ ok: true, status: 204 });
+      },
+      setIntervalFn: () => 1,
+      clearIntervalFn: () => {},
+      setTimeoutFn: timers.setTimeoutFn,
+      clearTimeoutFn: timers.clearTimeoutFn,
+    });
+
+    await service.reconcile({ reason: "manual" });
+    await timers.runAll();
+    await service.reconcile({ reason: "manual" });
+    await timers.runAll();
+
+    assert.strictEqual(calls.length, 1);
+    const payload = JSON.parse(calls[0].options.body);
+    assert.match(
+      payload.content,
+      /Human review required: mission-jon-review-rollup needs human review/,
+    );
+    assert.match(payload.embeds[0].footer.text, /Mission Control notification v1 • review/);
+  });
+
+  it("sends completion for a parent outcome when all linked children are terminal", async () => {
+    const dataDir = createTempDir();
+    const timers = createTimerHarness();
+    const calls = [];
+    const service = createMissionControlService({
+      config: createConfig({
+        integrations: {
+          linear: {
+            projectSlugs: ["littlebrief"],
+          },
+        },
+        missionControl: {
+          outcomes: [
+            {
+              key: "jon-big-task",
+              missionKey: "mission-jon-big-task",
+              title: "Jon big task",
+              lane: "lane:jon",
+              linkedLinearIdentifiers: ["ARC-36", "ARC-37"],
+              linkedLinearProjectSlugs: ["littlebrief"],
+              linkedProjectKeys: ["littlebrief"],
+            },
+          ],
+        },
+      }),
+      dataDir,
+      now: () => Date.parse("2026-03-10T04:05:00.000Z"),
+      logger: { error() {}, warn() {} },
+      linearClient: {
+        fetchIssuesForProjects: async () => [
+          createIssue(),
+          createIssue({
+            id: "issue-2",
+            identifier: "ARC-37",
+            title: "Second child",
+            url: "https://linear.app/arcqdev/issue/ARC-37",
+          }),
+        ],
+      },
+      discordFetchImpl: async (url, options) => {
+        calls.push({ url, options });
+        return createDiscordResponse({ ok: true, status: 204 });
+      },
+      setIntervalFn: () => 1,
+      clearIntervalFn: () => {},
+      setTimeoutFn: timers.setTimeoutFn,
+      clearTimeoutFn: timers.clearTimeoutFn,
+    });
+
+    await service.reconcile({ reason: "manual" });
+    await timers.runAll();
+
+    assert.strictEqual(calls.length, 1);
+    const payload = JSON.parse(calls[0].options.body);
+    assert.match(payload.content, /Mission complete: mission-jon-big-task completed/);
+    assert.strictEqual(service.getPublicState().masterCards.length, 1);
+    assert.strictEqual(service.getPublicState().masterCards[0].status, "completed");
   });
 });
